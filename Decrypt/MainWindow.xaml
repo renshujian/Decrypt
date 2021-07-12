@@ -5,8 +5,15 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:Decrypt"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
-
-    </Grid>
+        Title="MainWindow" Height="450" Width="800" Topmost="True">
+    <DockPanel>
+        <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="20">
+            <TextBlock>请扫描标签二维码：</TextBlock>
+            <TextBox Name="input" TextChanged="input_TextChanged" Width="600"/>
+        </StackPanel>
+        <StackPanel Margin="20">
+            <TextBlock FontSize="50" TextAlignment="Center">当前标签为：</TextBlock>    
+            <TextBlock Name="partID" FontSize="50" TextWrapping="Wrap"/>
+        </StackPanel>
+    </DockPanel>
 </Window>
