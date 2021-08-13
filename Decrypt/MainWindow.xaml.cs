@@ -37,6 +37,7 @@ namespace Decrypt
                     await Dispatcher.InvokeAsync(() => ProcessFile(e.FullPath, partID.Text));
                 }
             };
+            fileSystemWatcher.IncludeSubdirectories = true;
             fileSystemWatcher.EnableRaisingEvents = true;
         }
 
@@ -64,7 +65,7 @@ namespace Decrypt
             var newInfo = string.Join('\n', lines);
             File.WriteAllText(path, text.Replace(info, newInfo));
             newPartID = newPartID.Replace('/', '_').Replace('*', '_');
-            File.Move(path, Path.GetFullPath(path.Replace(partID, newPartID)));
+            File.Move(path, Path.GetFullPath(path.Replace(partID, newPartID)), true);
         }
     }
 }

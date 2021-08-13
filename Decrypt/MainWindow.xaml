@@ -5,11 +5,11 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:Decrypt"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800" Topmost="True">
+        Title="MainWindow" Height="450" Width="800">
     <DockPanel>
         <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="20">
             <TextBlock>请扫描标签二维码：</TextBlock>
-            <TextBox Name="input" TextChanged="input_TextChanged" Width="600"/>
+            <TextBox Name="input" TextChanged="input_TextChanged" Width="600" InputMethod.IsInputMethodEnabled="False"/>
         </StackPanel>
         <StackPanel Margin="20">
             <TextBlock FontSize="50" TextAlignment="Center">当前标签为：</TextBlock>    
