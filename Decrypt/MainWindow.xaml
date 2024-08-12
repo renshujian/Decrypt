@@ -1,15 +1,27 @@
-﻿<Window x:Class="Decrypt.MainWindow"
+﻿<Window x:Class="Report.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:Decrypt"
+        xmlns:local="clr-namespace:Report"
         mc:Ignorable="d"
-        Title="MainWindow" SizeToContent="WidthAndHeight">
-    <DockPanel>
-        <StackPanel Orientation="Horizontal" DockPanel.Dock="Top" Margin="5">
-            <TextBlock>条码：</TextBlock>
-            <TextBox Name="input" TextChanged="input_TextChanged" Width="200" InputMethod.IsInputMethodEnabled="False"/>
-        </StackPanel>
-    </DockPanel>
+        Title="数据采集通讯软件" FontSize="24" Height="400" Width="600">
+    <Grid Margin="20">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="150" />
+            <ColumnDefinition />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="40" />
+            <RowDefinition Height="40" />
+            <RowDefinition Height="40"/>
+            <RowDefinition />
+        </Grid.RowDefinitions>
+        <TextBlock VerticalAlignment="Center" HorizontalAlignment="Right">输入条码：</TextBlock>
+        <TextBox Grid.Column="1" Height="36" Name="input" TextChanged="input_TextChanged" InputMethod.IsInputMethodEnabled="False"/>
+        <TextBlock Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Right">当前条码：</TextBlock>
+        <TextBlock Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" Text="{Binding CurrentSn}" />
+        <TextBlock Grid.Row="2" Grid.ColumnSpan="2" VerticalAlignment="Bottom" HorizontalAlignment="Center" FontSize="18">请保持软件开启以自动生成报告。待生成报告的文件：</TextBlock>
+        <ListBox Grid.Row="3" Grid.ColumnSpan="2" ItemsSource="{Binding ReportQueue.Items}" />
+    </Grid>
 </Window>
