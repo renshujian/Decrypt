@@ -45,7 +45,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
     public event PropertyChangedEventHandler? PropertyChanged;
-    public ReportQueue ReportQueue { get; } = [];
+    public ReportQueue ReportQueue { get; } = new();
 
     public MainWindow()
     {
@@ -82,14 +82,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             if (!string.IsNullOrWhiteSpace(CurrentSn))
             {
-                Dispatcher.BeginInvoke(async () =>
+                Dispatcher.Invoke(() =>
                 {
                     ReportQueue.Enqueue(e.FullPath);
                     int csvCount = int.Parse(Config["Report:CsvCount"]!);
                     if (ReportQueue.Count >= csvCount)
                     {
                         var files = ReportQueue.Dequeue(csvCount);
-                        await (await generateReport(new HooksArgs() { sn = CurrentSn, config = Config, files = files }));
+                        generateReport(new HooksArgs() { sn = CurrentSn, config = Config, files = files }).ContinueWith((Task<Task> scriptTask) =>
+                        {
+                            scriptTask.Result.ContinueWith(hookTask =>
+                            {
+                                MessageBox.Show(hookTask.Exception!.ToString(), hookTask.Exception.GetType().FullName, MessageBoxButton.OK, MessageBoxImage.Error);
+                            }, TaskContinuationOptions.OnlyOnFaulted);
+                        });
                     }
                 });
             }
@@ -110,8 +116,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 public class HooksArgs
 {
-    public required string sn;
-    public required IConfiguration config;
+    public string sn;
+    public IConfiguration config;
     public List<string>? files;
 }
 
@@ -119,7 +125,7 @@ public sealed class ReportQueue : IEnumerable<string>, IDisposable
 {
     public string Path { get; } = nameof(ReportQueue);
     private StreamWriter _writer;
-    public ObservableCollection<string> Items { get; } = [];
+    public ObservableCollection<string> Items { get; } = new();
     public int Count => Items.Count;
 
     public ReportQueue()
@@ -147,10 +153,12 @@ public sealed class ReportQueue : IEnumerable<string>, IDisposable
 
     public List<string> Dequeue(int count = 1)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(count, 1);
-        ArgumentOutOfRangeException.ThrowIfLessThan(Count, count);
+        if (count < 1 || count > Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count));
+        }
 
-        List<string> returns = [];
+        List<string> returns = new();
         for (int i = 0; i < count; i++)
         {
             returns.Add(Items[0]);

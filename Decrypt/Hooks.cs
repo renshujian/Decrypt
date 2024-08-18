@@ -87,7 +87,7 @@ internal static class Hooks
             File.Delete("temp.png");
         }
 
-        report.SaveAs(ok ? $@"{config["Report:OkDir"]}\OK_{sn}_{DateTime.Now.ToString("yyyyMMddhhmmss")}.xlsx" : $@"{config["Report:NgDir"]}\NG_{sn}_{DateTime.Now.ToString("yyyyMMddhhmmss")}.xlsx");
+        report.SaveAs(ok ? $@"{config["Report:OkDir"]}\OK_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss")}.xlsx" : $@"{config["Report:NgDir"]}\NG_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss")}.xlsx");
     }
 
     private static Data ReadCsv(string path)
@@ -162,7 +162,7 @@ internal static class Hooks
         public double XMax_X { get; set; }
         public double XMax_Y { get; set; }
         public string Result { get; set; } = string.Empty;
-        public List<double> x { get; set; } = [];
-        public List<double> y { get; set; } = [];
+        public List<double> x { get; set; } = new();
+        public List<double> y { get; set; } = new();
     }
 }
