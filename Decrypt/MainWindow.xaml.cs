@@ -82,7 +82,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             if (!string.IsNullOrWhiteSpace(CurrentSn))
             {
-                Dispatcher.Invoke(() =>
+                Dispatcher.BeginInvoke(() =>
                 {
                     ReportQueue.Enqueue(e.FullPath);
                     int csvCount = int.Parse(Config["Report:CsvCount"]!);
@@ -137,10 +137,11 @@ public sealed class ReportQueue : IEnumerable<string>, IDisposable
                 Items.Add(item);
             }
         }
-        _writer = new StreamWriter(Path, append: true)
+        _writer = new StreamWriter(Path)
         {
             AutoFlush = true,
         };
+        _writer.BaseStream.Position = _writer.BaseStream.Length;
     }
 
     public void Dispose() => _writer.Dispose();
