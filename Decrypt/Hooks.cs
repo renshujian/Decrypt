@@ -105,13 +105,19 @@ internal static class Hooks
                 if (basepoint_y != null)
                 {
                     using var json = JsonDocument.Parse(basepoint_y.Replace('$', ','));
-                    data.basepoint_y = Math.Round(json.RootElement.GetProperty("value").GetDouble(), 1);
+                    if (json.RootElement.GetProperty("value").TryGetDouble(out double value))
+                    {
+                        data.basepoint_y = Math.Round(value, 1);
+                    }
                 }
                 string? basepoint_x = reader["basepoint_x"];
                 if (basepoint_x != null)
                 {
                     using var json = JsonDocument.Parse(basepoint_x.Replace('$', ','));
-                    data.basepoint_x = Math.Round(json.RootElement.GetProperty("value").GetDouble(), 1);
+                    if (json.RootElement.GetProperty("value").TryGetDouble(out double value))
+                    {
+                        data.basepoint_x = Math.Round(value, 1);
+                    }
                 }
             }
             else if (reader[0] == "EV_CURVE")
@@ -123,14 +129,20 @@ internal static class Hooks
                 if (XMax_Y != null)
                 {
                     using var json = JsonDocument.Parse(XMax_Y.Replace('$', ','));
-                    data.XMax_Y = Math.Round(json.RootElement.GetProperty("value").GetDouble(), 1);
+                    if (json.RootElement.GetProperty("value").TryGetDouble(out double value))
+                    {
+                        data.XMax_Y = Math.Round(value, 1);
+                    }
                 }
                 string? XMax_X = reader["XMax_X"];
                 if (XMax_X != null)
                 {
                     using var json = JsonDocument.Parse(XMax_X.Replace('$', ','));
-                    var XMax_X_Raw = Math.Round(json.RootElement.GetProperty("value").GetDouble(), 1);
-                    data.XMax_X = XMax_X_Raw >= 2.5 && XMax_X_Raw <= 2.9 ? 2.7 : XMax_X_Raw;
+                    if (json.RootElement.GetProperty("value").TryGetDouble(out double value))
+                    {
+                        var XMax_X_Raw = Math.Round(value, 1);
+                        data.XMax_X = XMax_X_Raw >= 2.5 && XMax_X_Raw <= 2.9 ? 2.7 : XMax_X_Raw;
+                    }
                 }
             }
             else if (reader[0] == "curveDatas")
