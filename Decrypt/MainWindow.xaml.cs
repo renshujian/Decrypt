@@ -1,18 +1,11 @@
-﻿using ClosedXML.Report;
-using CsvHelper;
-using FluentModbus;
-using Microsoft.CodeAnalysis.CSharp.Scripting;
-using Microsoft.CodeAnalysis.Scripting;
+﻿using LiteDB;
 using Microsoft.Extensions.Configuration;
-using ScottPlot;
+using ScottPlot.DataSources;
+using ScottPlot.Plottables;
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.ComponentModel;
 using System.IO;
-using System.Net.Http.Json;
-using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -21,165 +14,110 @@ namespace Report;
 /// <summary>
 /// Interaction logic for MainWindow.xaml
 /// </summary>
-public partial class MainWindow : Window, INotifyPropertyChanged
+public partial class MainWindow : Window
 {
     public static IConfigurationRoot Config { get; } = new ConfigurationBuilder().AddIniFile("config.ini", optional: false, reloadOnChange: true).Build();
-    private readonly DispatcherTimer _delayTimer = new();
-    private readonly FileSystemWatcher _fileSystemWatcher = new(Config["Report:WatchCsvDir"]!, "*.csv");
-    private string _currentSn = string.Empty;
-    public string CurrentSn
-    {
-        get
-        {
-            if (string.IsNullOrWhiteSpace(_currentSn) && File.Exists(nameof(CurrentSn)))
-            {
-                _currentSn = File.ReadAllText(nameof(CurrentSn));
-            }
-            return _currentSn;
-        }
-        private set
-        {
-            File.WriteAllText(nameof(CurrentSn), value);
-            _currentSn = value;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CurrentSn)));
-        }
-    }
-    public event PropertyChangedEventHandler? PropertyChanged;
-    public ReportQueue ReportQueue { get; } = new();
+    private readonly FileSystemWatcher _fileSystemWatcher = new(Config["WatchCsvDir"]!, "*.csv");
+
+    private Measurement? _measure;
+    public bool Running => _measure?.Status == 1;
+
+    private readonly List<double> _maxAxialForce = new(4_000_000);
+    private readonly List<double> _minAxialForce = new(4_000_000);
+    private Stream _stream1 = Stream.Null;
+    private Stream _stream2 = Stream.Null;
 
     public MainWindow()
     {
-        // 编译脚本
-        var hooks = CSharpScript.Create(File.ReadAllText("Hooks.cs"), ScriptOptions.Default.WithReferences(
-            typeof(ModbusTcpClient).Assembly, typeof(IConfiguration).Assembly, typeof(HttpClientJsonExtensions).Assembly, typeof(MessageBox).Assembly,
-            typeof(CsvReader).Assembly, typeof(XLTemplate).Assembly, typeof(Plot).Assembly
-        ), typeof(HooksArgs));
-        hooks.Compile();
-        var onInput = hooks.ContinueWith<Task>("Hooks.OnInput(sn, config)").CreateDelegate();
-        var generateReport = hooks.ContinueWith<Task>("Hooks.GenerateReport(sn, config, files)").CreateDelegate();
-
         InitializeComponent();
-        DataContext = this;
-        input.Focus();
-
-        // 输入停止0.5秒后触发Hooks.OnInput，之后清空输入框
-        _delayTimer.Interval = TimeSpan.FromSeconds(0.5);
-        _delayTimer.Tick += async (o, e) =>
-        {
-            _delayTimer.Stop();
-            await (await onInput(new HooksArgs() { sn = input.Text, config = Config }));
-            if (CurrentSn != input.Text)
-            {
-                ReportQueue.Clear();
-                CurrentSn = input.Text;
-            }
-            input.Text = "";
-        };
+        Application.Current.Exit += App_Exit;
 
         // config.ini修改时修改监视目录
-        Config.GetReloadToken().RegisterChangeCallback(_ => _fileSystemWatcher.Path = Config["Report:WatchCsvDir"]!, null);
+        Config.GetReloadToken().RegisterChangeCallback(_ => _fileSystemWatcher.Path = Config["WatchCsvDir"]!, null);
         _fileSystemWatcher.Created += (o, e) =>
         {
-            if (!string.IsNullOrWhiteSpace(CurrentSn))
+            Dispatcher.BeginInvoke(() =>
             {
-                Dispatcher.BeginInvoke(() =>
+                (double entry1, double entry2) = Helper.ReadCsv(e.FullPath);
+                _maxAxialForce.Add(entry1);
+                _stream1.Write(BitConverter.GetBytes(entry1));
+                _minAxialForce.Add(entry2);
+                _stream2.Write(BitConverter.GetBytes(entry2));
+                if (ScaleCheckBox.IsChecked == true)
                 {
-                    ReportQueue.Enqueue(e.FullPath);
-                    int csvCount = int.Parse(Config["Report:CsvCount"]!);
-                    if (ReportQueue.Count >= csvCount)
-                    {
-                        var files = ReportQueue.Dequeue(csvCount);
-                        generateReport(new HooksArgs() { sn = CurrentSn, config = Config, files = files }).ContinueWith((Task<Task> scriptTask) =>
-                        {
-                            scriptTask.Result.ContinueWith(hookTask =>
-                            {
-                                MessageBox.Show(hookTask.Exception!.ToString(), hookTask.Exception.GetType().FullName, MessageBoxButton.OK, MessageBoxImage.Error);
-                            }, TaskContinuationOptions.OnlyOnFaulted);
-                        });
-                    }
-                });
-            }
+                    WpfPlot1.Plot.Axes.AutoScale();
+                }
+                WpfPlot1.Refresh();
+            });
         };
         _fileSystemWatcher.IncludeSubdirectories = true;
-        _fileSystemWatcher.EnableRaisingEvents = true;
-    }
 
-    private void input_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
-    {
-        if (input.Text != "")
+        Measurement? lastMeasure = Helper.Measurements.Query().Where(x => x.Status == 1).OrderByDescending(x => x.Id).FirstOrDefault();
+        if (lastMeasure != null)
         {
-            _delayTimer.Stop();
-            _delayTimer.Start();
-        }
-    }
-}
-
-public class HooksArgs
-{
-    public string sn;
-    public IConfiguration config;
-    public List<string>? files;
-}
-
-public sealed class ReportQueue : IEnumerable<string>, IDisposable
-{
-    public string Path { get; } = nameof(ReportQueue);
-    private StreamWriter _writer;
-    public ObservableCollection<string> Items { get; } = new();
-    public int Count => Items.Count;
-
-    public ReportQueue()
-    {
-        if (File.Exists(Path))
-        {
-            foreach (string item in File.ReadAllLines(Path))
+            if (MessageBox.Show("是否继续上次未结束的采集？", string.Empty, MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
             {
-                Items.Add(item);
+                _measure = lastMeasure;
+                _maxAxialForce.AddRange(MemoryMarshal.Cast<byte, double>(File.ReadAllBytes(lastMeasure.Files[0])));
+                _minAxialForce.AddRange(MemoryMarshal.Cast<byte, double>(File.ReadAllBytes(lastMeasure.Files[1])));
+                _stream1 = File.OpenWrite(lastMeasure.Files[0]);
+                _stream1.Position = _stream1.Length;
+                _stream2 = File.OpenWrite(lastMeasure.Files[1]);
+                _stream2.Position = _stream2.Length;
+                _fileSystemWatcher.EnableRaisingEvents = true;
+                StopButton.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                Helper.Measurements.Update(lastMeasure with { Status = 2 });
             }
         }
-        _writer = new StreamWriter(Path)
-        {
-            AutoFlush = true,
-        };
-        _writer.BaseStream.Position = _writer.BaseStream.Length;
+
+        // 初始化数据图表
+        WpfPlot1.Plot.ScaleFactor = WpfPlot1.DisplayScale;
+        Signal maxAxialForce = WpfPlot1.Plot.Add.Signal(new SignalSourceDouble(_maxAxialForce, 1));
+        maxAxialForce.LegendText = "Maximum Axial Force";
+        Signal minAxialForce = WpfPlot1.Plot.Add.Signal(new SignalSourceDouble(_minAxialForce, 1));
+        minAxialForce.LegendText = "Minimum Axial Force";
+        WpfPlot1.Plot.XLabel("N/cycles");
+        WpfPlot1.Plot.YLabel("Force/kN");
+        WpfPlot1.Plot.Title("(-1.6mm,-2.6mm)");
     }
 
-    public void Dispose() => _writer.Dispose();
-
-    public void Enqueue(string item)
+    private void App_Exit(object sender, ExitEventArgs e)
     {
-        Items.Add(item);
-        _writer.WriteLine(item);
+        _stream1.Close();
+        _stream2.Close();
     }
 
-    public List<string> Dequeue(int count = 1)
+    private void StartButton_Click(object sender, RoutedEventArgs e) => Start();
+
+    private void Start()
     {
-        if (count < 1 || count > Count)
-        {
-            throw new ArgumentOutOfRangeException(nameof(count));
-        }
-
-        List<string> returns = new();
-        for (int i = 0; i < count; i++)
-        {
-            returns.Add(Items[0]);
-            Items.RemoveAt(0);
-        }
-        _writer.BaseStream.SetLength(0);
-        foreach (string item in Items)
-        {
-            _writer.WriteLine(item);
-        }
-        return returns;
+        _measure = new Measurement(ObjectId.NewObjectId(), 1, []);
+        _measure.Files.Add($"data/{_measure.Id}_stream1");
+        _measure.Files.Add($"data/{_measure.Id}_stream2");
+        Helper.Measurements.Insert(_measure);
+        _stream1 = File.Create(_measure.Files[0]);
+        _stream2 = File.Create(_measure.Files[1]);
+        _fileSystemWatcher.EnableRaisingEvents = true;
+        StopButton.Visibility = Visibility.Visible;
     }
 
-    public void Clear()
+    private void StopButton_Click(object sender, RoutedEventArgs e) => Stop();
+
+    private void Stop()
     {
-        Items.Clear();
-        _writer.BaseStream.SetLength(0);
+        _fileSystemWatcher.EnableRaisingEvents = false;
+        if (_measure != null)
+        {
+            _measure = _measure with { Status = 2 };
+            Helper.Measurements.Update(_measure with { Status = 2 });
+            _stream1.Close();
+            _stream2.Close();
+        }
+        StopButton.Visibility = Visibility.Hidden;
     }
-
-    public IEnumerator<string> GetEnumerator() => Items.GetEnumerator();
-
-    IEnumerator IEnumerable.GetEnumerator() => Items.GetEnumerator();
 }
+
+public record class Measurement(ObjectId Id, int Status, List<string> Files);
