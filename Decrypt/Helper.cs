@@ -1,10 +1,9 @@
-﻿using CsvHelper.Configuration;
-using CsvHelper;
+﻿using CsvHelper;
+using CsvHelper.Configuration;
 using LiteDB;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
-using System.Collections.Generic;
 
 namespace Report;
 
@@ -21,28 +20,22 @@ internal static class Helper
         using var reader = new CsvReader(new StreamReader(path), new CsvConfiguration(CultureInfo.InvariantCulture) { IgnoreBlankLines = false, MissingFieldFound = null, BadDataFound = null });
         while (reader.Read())
         {
-            if (reader[0] == "EV_1")
+            if (reader[0] == "EV_CURVE")
             {
                 reader.Read();
                 reader.ReadHeader();
                 reader.Read();
-                string? entry = reader["entry"];
-                if (entry != null)
+                string? YMax_Y = reader["YMax_Y"];
+                if (YMax_Y != null)
                 {
-                    using var json = JsonDocument.Parse(entry.Replace('$', ','));
-                    json.RootElement.GetProperty("value").TryGetDouble(out entry1);
+                    using var json = JsonDocument.Parse(YMax_Y.Replace('$', ','));
+                    double.TryParse(json.RootElement.GetProperty("value").GetRawText(), out entry1);
                 }
-            }
-            else if (reader[0] == "EV_2")
-            {
-                reader.Read();
-                reader.ReadHeader();
-                reader.Read();
-                string? entry = reader["entry"];
-                if (entry != null)
+                string? YMin_Y = reader["YMin_Y"];
+                if (YMin_Y != null)
                 {
-                    using var json = JsonDocument.Parse(entry.Replace('$', ','));
-                    json.RootElement.GetProperty("value").TryGetDouble(out entry2);
+                    using var json = JsonDocument.Parse(YMin_Y.Replace('$', ','));
+                    double.TryParse(json.RootElement.GetProperty("value").GetRawText(), out entry2);
                 }
             }
         }

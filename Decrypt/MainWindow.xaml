@@ -6,6 +6,7 @@
         xmlns:ScottPlot="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
         xmlns:local="clr-namespace:Report"
         mc:Ignorable="d"
+        MouseMove="Window_MouseMove"
         Title="数据采集软件" FontSize="20" Height="600" Width="800" WindowState="Maximized">
     <Grid Margin="20">
         <Grid.ColumnDefinitions>

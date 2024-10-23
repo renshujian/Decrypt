@@ -1,11 +1,13 @@
 ﻿using LiteDB;
 using Microsoft.Extensions.Configuration;
+using ScottPlot;
 using ScottPlot.DataSources;
 using ScottPlot.Plottables;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -26,6 +28,10 @@ public partial class MainWindow : Window
     private readonly List<double> _minAxialForce = new(4_000_000);
     private Stream _stream1 = Stream.Null;
     private Stream _stream2 = Stream.Null;
+    private Signal _signal1;
+    private Signal _signal2;
+    private Crosshair _crosshair;
+    private Text _text;
 
     public MainWindow()
     {
@@ -36,6 +42,8 @@ public partial class MainWindow : Window
         Config.GetReloadToken().RegisterChangeCallback(_ => _fileSystemWatcher.Path = Config["WatchCsvDir"]!, null);
         _fileSystemWatcher.Created += (o, e) =>
         {
+            // 等待文件上传完成
+            Thread.Sleep(300);
             Dispatcher.BeginInvoke(() =>
             {
                 (double entry1, double entry2) = Helper.ReadCsv(e.FullPath);
@@ -75,10 +83,17 @@ public partial class MainWindow : Window
 
         // 初始化数据图表
         WpfPlot1.Plot.ScaleFactor = WpfPlot1.DisplayScale;
-        Signal maxAxialForce = WpfPlot1.Plot.Add.Signal(new SignalSourceDouble(_maxAxialForce, 1));
-        maxAxialForce.LegendText = "Maximum Axial Force";
-        Signal minAxialForce = WpfPlot1.Plot.Add.Signal(new SignalSourceDouble(_minAxialForce, 1));
-        minAxialForce.LegendText = "Minimum Axial Force";
+        _signal1 = WpfPlot1.Plot.Add.Signal(new SignalSourceDouble(_maxAxialForce, 1));
+        _signal1.LegendText = "Maximum Axial Force";
+        _signal1.Data.XOffset = 1;
+        _signal2 = WpfPlot1.Plot.Add.Signal(new SignalSourceDouble(_minAxialForce, 1));
+        _signal2.LegendText = "Minimum Axial Force";
+        _signal2.Data.XOffset = 1;
+        _crosshair = WpfPlot1.Plot.Add.Crosshair(0, 0);
+        _crosshair.IsVisible = false;
+        _text = WpfPlot1.Plot.Add.Text(string.Empty, 0, 0);
+        _text.IsVisible = false;
+        _text.LabelBold = true;
         WpfPlot1.Plot.XLabel("N/cycles");
         WpfPlot1.Plot.YLabel("Force/kN");
         WpfPlot1.Plot.Title("(-1.6mm,-2.6mm)");
@@ -100,6 +115,9 @@ public partial class MainWindow : Window
         Helper.Measurements.Insert(_measure);
         _stream1 = File.Create(_measure.Files[0]);
         _stream2 = File.Create(_measure.Files[1]);
+        _maxAxialForce.Clear();
+        _minAxialForce.Clear();
+        WpfPlot1.Refresh();
         _fileSystemWatcher.EnableRaisingEvents = true;
         StopButton.Visibility = Visibility.Visible;
     }
@@ -112,11 +130,38 @@ public partial class MainWindow : Window
         if (_measure != null)
         {
             _measure = _measure with { Status = 2 };
-            Helper.Measurements.Update(_measure with { Status = 2 });
+            Helper.Measurements.Update(_measure);
             _stream1.Close();
             _stream2.Close();
         }
         StopButton.Visibility = Visibility.Hidden;
+    }
+
+    private void Window_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        var point = e.GetPosition(WpfPlot1);
+        var pixel = new Pixel(point.X * WpfPlot1.DisplayScale, point.Y * WpfPlot1.DisplayScale);
+        var coordinates = WpfPlot1.Plot.GetCoordinates(pixel);
+        var dataPoint = _signal1.GetNearest(coordinates, WpfPlot1.Plot.LastRender);
+        if (!dataPoint.IsReal)
+        {
+            dataPoint = _signal2.GetNearest(coordinates, WpfPlot1.Plot.LastRender);
+        }
+        if (dataPoint.IsReal)
+        {
+            _crosshair.IsVisible = true;
+            _crosshair.Position = dataPoint.Coordinates;
+            _text.IsVisible = true;
+            _text.Location = dataPoint.Coordinates;
+            _text.LabelText = $"({dataPoint.Coordinates.X}, {dataPoint.Coordinates.Y:f1})";
+            WpfPlot1.Refresh();
+        }
+        else if (_crosshair.IsVisible)
+        {
+            _crosshair.IsVisible = false;
+            _text.IsVisible = false;
+            WpfPlot1.Refresh();
+        }
     }
 }
 
