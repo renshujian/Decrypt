@@ -2,7 +2,7 @@
 
   <PropertyGroup>
 	<AssemblyName>Report.Chart</AssemblyName>
-	<Version>1.0.1</Version>
+	<Version>1.0.2</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
 	<SelfContained>true</SelfContained>
