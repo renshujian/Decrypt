@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Configuration;
 using ScottPlot;
 using ScottPlot.DataSources;
+using ScottPlot.Interactivity.UserActionResponses;
 using ScottPlot.Plottables;
 using System;
 using System.Collections.Generic;
@@ -32,6 +33,7 @@ public partial class MainWindow : Window
     private Signal _signal2;
     private Crosshair _crosshair;
     private Text _text;
+    private DataPoint _dataPoint;
 
     public MainWindow()
     {
@@ -68,9 +70,9 @@ public partial class MainWindow : Window
                 _measure = lastMeasure;
                 _maxAxialForce.AddRange(MemoryMarshal.Cast<byte, double>(File.ReadAllBytes(lastMeasure.Files[0])));
                 _minAxialForce.AddRange(MemoryMarshal.Cast<byte, double>(File.ReadAllBytes(lastMeasure.Files[1])));
-                _stream1 = File.OpenWrite(lastMeasure.Files[0]);
+                _stream1 = File.Open(lastMeasure.Files[0], FileMode.Open);
                 _stream1.Position = _stream1.Length;
-                _stream2 = File.OpenWrite(lastMeasure.Files[1]);
+                _stream2 = File.Open(lastMeasure.Files[1], FileMode.Open);
                 _stream2.Position = _stream2.Length;
                 _fileSystemWatcher.EnableRaisingEvents = true;
                 StopButton.Visibility = Visibility.Visible;
@@ -97,6 +99,12 @@ public partial class MainWindow : Window
         WpfPlot1.Plot.XLabel("N/cycles");
         WpfPlot1.Plot.YLabel("Force/kN");
         WpfPlot1.Plot.Title("(-1.6mm,-2.6mm)");
+        WpfPlot1.UserInputProcessor.IsEnabled = true;
+        // ScottPlot.WPF的右键菜单不能定制关闭事件，且使用的就是WPF的ContextMenu。这里使用WPF的右键菜单而不是ScottPlot的右键菜单
+        WpfPlot1.UserInputProcessor.RemoveAll<SingleClickContextMenu>();
+        // 移动鼠标去点击菜单的过程中不要更新标记点
+        WpfPlot1.ContextMenu.Opened += (_, _) => WpfPlot1.MouseMove -= WpfPlot1_MouseMove;
+        WpfPlot1.ContextMenu.Closed += (_, _) => WpfPlot1.MouseMove += WpfPlot1_MouseMove;
     }
 
     private void App_Exit(object sender, ExitEventArgs e)
@@ -113,7 +121,9 @@ public partial class MainWindow : Window
         _measure.Files.Add($"data/{_measure.Id}_stream1");
         _measure.Files.Add($"data/{_measure.Id}_stream2");
         Helper.Measurements.Insert(_measure);
+        _stream1.Close();
         _stream1 = File.Create(_measure.Files[0]);
+        _stream2.Close();
         _stream2 = File.Create(_measure.Files[1]);
         _maxAxialForce.Clear();
         _minAxialForce.Clear();
@@ -131,13 +141,11 @@ public partial class MainWindow : Window
         {
             _measure = _measure with { Status = 2 };
             Helper.Measurements.Update(_measure);
-            _stream1.Close();
-            _stream2.Close();
         }
         StopButton.Visibility = Visibility.Hidden;
     }
 
-    private void Window_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    private void WpfPlot1_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
     {
         var point = e.GetPosition(WpfPlot1);
         var pixel = new Pixel(point.X * WpfPlot1.DisplayScale, point.Y * WpfPlot1.DisplayScale);
@@ -149,6 +157,7 @@ public partial class MainWindow : Window
         }
         if (dataPoint.IsReal)
         {
+            _dataPoint = dataPoint;
             _crosshair.IsVisible = true;
             _crosshair.Position = dataPoint.Coordinates;
             _text.IsVisible = true;
@@ -160,6 +169,36 @@ public partial class MainWindow : Window
         {
             _crosshair.IsVisible = false;
             _text.IsVisible = false;
+            WpfPlot1.Refresh();
+        }
+    }
+
+    private void MenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (_crosshair.IsVisible)
+        {
+            int index = _dataPoint.Index;
+            long position = index * sizeof(double);
+            long nextPosition = position + sizeof(double);
+            long moveLength = _stream1.Length - nextPosition;
+            if (moveLength > 25_000_000 || moveLength < 0)
+            {
+                return;
+            }
+            byte[] buffer = new byte[moveLength];
+
+            _maxAxialForce.RemoveAt(index);
+            _stream1.Position = nextPosition;
+            _stream1.ReadExactly(buffer);
+            _stream1.SetLength(position);
+            _stream1.Write(buffer);
+
+            _minAxialForce.RemoveAt(index);
+            _stream2.Position = nextPosition;
+            _stream2.ReadExactly(buffer);
+            _stream2.SetLength(position);
+            _stream2.Write(buffer);
+
             WpfPlot1.Refresh();
         }
     }

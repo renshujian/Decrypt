@@ -6,7 +6,6 @@
         xmlns:ScottPlot="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
         xmlns:local="clr-namespace:Report"
         mc:Ignorable="d"
-        MouseMove="Window_MouseMove"
         Title="数据采集软件" FontSize="20" Height="600" Width="800" WindowState="Maximized">
     <Grid Margin="20">
         <Grid.ColumnDefinitions>
@@ -22,6 +21,12 @@
         <Button Name="StartButton" Click="StartButton_Click" Grid.ColumnSpan="3">开始采集</Button>
         <Button Name="StopButton" Click="StopButton_Click" Grid.ColumnSpan="3" Visibility="Hidden">结束采集</Button>
         <CheckBox Name="ScaleCheckBox" IsChecked="True" Grid.Column="4" VerticalAlignment="Bottom" HorizontalAlignment="Right" FontSize="13">自动缩放图形</CheckBox>
-        <ScottPlot:WpfPlot Name="WpfPlot1" Grid.Row="1" Grid.ColumnSpan="4" />
+        <ScottPlot:WpfPlot Name="WpfPlot1" Grid.Row="1" Grid.ColumnSpan="4" MouseMove="WpfPlot1_MouseMove">
+            <ScottPlot:WpfPlot.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="移除当前数据" Click="MenuItem_Click" />
+                </ContextMenu>
+            </ScottPlot:WpfPlot.ContextMenu>
+        </ScottPlot:WpfPlot>
     </Grid>
 </Window>
