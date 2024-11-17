@@ -24,9 +24,11 @@
         <ScottPlot:WpfPlot Name="WpfPlot1" Grid.Row="1" Grid.ColumnSpan="4" MouseMove="WpfPlot1_MouseMove">
             <ScottPlot:WpfPlot.ContextMenu>
                 <ContextMenu>
-                    <MenuItem Header="移除当前数据" Click="MenuItem_Click" />
+                    <MenuItem Header="保存图片" Click="SaveImage_Click" />
+                    <MenuItem Header="移除当前数据" Click="RemovePoint_Click" />
                 </ContextMenu>
             </ScottPlot:WpfPlot.ContextMenu>
         </ScottPlot:WpfPlot>
+        <TextBox Name="TitleBox" Grid.Row="1" Grid.ColumnSpan="4" VerticalAlignment="Top" Margin="40,0,0,0" Width="300" Height="30" Background="Transparent" BorderThickness="0" GotFocus="TitleBox_GotFocus" LostFocus="TitleBox_LostFocus" KeyDown="TitleBox_KeyDown" />
     </Grid>
 </Window>

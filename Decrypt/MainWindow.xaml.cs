@@ -1,5 +1,6 @@
 ﻿using LiteDB;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Win32;
 using ScottPlot;
 using ScottPlot.DataSources;
 using ScottPlot.Interactivity.UserActionResponses;
@@ -10,6 +11,8 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 
 namespace Report;
@@ -173,7 +176,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void MenuItem_Click(object sender, RoutedEventArgs e)
+    private void RemovePoint_Click(object sender, RoutedEventArgs e)
     {
         if (_crosshair.IsVisible)
         {
@@ -200,6 +203,75 @@ public partial class MainWindow : Window
             _stream2.Write(buffer);
 
             WpfPlot1.Refresh();
+        }
+    }
+
+    private void SaveImage_Click(object sender, RoutedEventArgs e)
+    {
+        SaveFileDialog dialog = new()
+        {
+            FileName = "plot.png",
+            Filter = "PNG Files (*.png)|*.png" +
+                     "|JPEG Files (*.jpg, *.jpeg)|*.jpg;*.jpeg" +
+                     "|BMP Files (*.bmp)|*.bmp" +
+                     "|WebP Files (*.webp)|*.webp" +
+                     "|SVG Files (*.svg)|*.svg" +
+                     "|All files (*.*)|*.*"
+        };
+
+        if (dialog.ShowDialog() is true)
+        {
+            if (string.IsNullOrEmpty(dialog.FileName))
+                return;
+
+            ImageFormat format;
+
+            try
+            {
+                format = ImageFormats.FromFilename(dialog.FileName);
+            }
+            catch (ArgumentException)
+            {
+                MessageBox.Show("不支持的文件格式", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            try
+            {
+                PixelSize lastRenderSize = WpfPlot1.Plot.RenderManager.LastRender.FigureRect.Size;
+                WpfPlot1.Plot.Save(dialog.FileName, (int)lastRenderSize.Width, (int)lastRenderSize.Height, format);
+            }
+            catch (Exception)
+            {
+                MessageBox.Show("保存图片失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+        }
+    }
+
+    private void TitleBox_GotFocus(object sender, RoutedEventArgs e)
+    {
+        TitleBox.Background = Brushes.White;
+        TitleBox.Text = WpfPlot1.Plot.Axes.Title.Label.Text;
+    }
+
+    private void TitleBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        WpfPlot1.Plot.Title(TitleBox.Text);
+        WpfPlot1.Refresh();
+        TitleBox.Text = string.Empty;
+        TitleBox.Background = Brushes.Transparent;
+    }
+
+    private void TitleBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            WpfPlot1.Focus();
+        }
+        else if (e.Key == Key.Escape)
+        {
+            TitleBox.Text = WpfPlot1.Plot.Axes.Title.Label.Text;
+            WpfPlot1.Focus();
         }
     }
 }
