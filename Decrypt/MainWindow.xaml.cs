@@ -80,7 +80,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Config.GetReloadToken().RegisterChangeCallback(_ => _fileSystemWatcher.Path = Config["Report:WatchCsvDir"]!, null);
         _fileSystemWatcher.Created += (o, e) =>
         {
-            if (!string.IsNullOrWhiteSpace(CurrentSn))
+            if (!string.IsNullOrWhiteSpace(CurrentSn) && File.Exists(e.FullPath))
             {
                 Dispatcher.BeginInvoke(() =>
                 {

@@ -46,6 +46,8 @@ internal static class Hooks
 
     public static async Task GenerateReport(string sn, IConfiguration config, List<string> files)
     {
+        // 等待文件上传完成并且不在主线程继续运行。后续的代码有可能并发执行，不允许写固定名称的文件
+        await Task.Delay(300).ConfigureAwait(continueOnCapturedContext: false);
         double InitialLowerLimit = Math.Round(double.Parse(config["Report:InitialLowerLimit"]!), 1);
         double InitialUpperLimit = Math.Round(double.Parse(config["Report:InitialUpperLimit"]!), 1);
         double FinalLowerLimit = Math.Round(double.Parse(config["Report:FinalLowerLimit"]!), 1);
@@ -81,13 +83,14 @@ internal static class Hooks
         {
             using var plot = new Plot();
             plot.Add.Scatter(data[i].x, data[i].y);
-            plot.SavePng("temp.png", 600, 500);
+            string pngName = $"{Guid.NewGuid()}.png";
+            plot.SavePng(pngName, 600, 500);
             var worksheet = report.Workbook.Worksheet(1);
-            var picture = worksheet.AddPicture("temp.png").MoveTo(worksheet.Cell(row + 28 * i, col));
-            File.Delete("temp.png");
+            var picture = worksheet.AddPicture(pngName).MoveTo(worksheet.Cell(row + 28 * i, col));
+            File.Delete(pngName);
         }
 
-        report.SaveAs(ok ? $@"{config["Report:OkDir"]}\OK_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss")}.xlsx" : $@"{config["Report:NgDir"]}\NG_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss")}.xlsx");
+        report.SaveAs(ok ? $@"{config["Report:OkDir"]}\OK_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss.fff")}.xlsx" : $@"{config["Report:NgDir"]}\NG_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss.fff")}.xlsx");
     }
 
     private static Data ReadCsv(string path)
@@ -105,7 +108,7 @@ internal static class Hooks
                 if (basepoint_y != null)
                 {
                     using var json = JsonDocument.Parse(basepoint_y.Replace('$', ','));
-                    if (json.RootElement.GetProperty("value").TryGetDouble(out double value))
+                    if (json.RootElement.TryGetProperty("value", out var element) && double.TryParse(element.GetRawText(), out double value))
                     {
                         data.basepoint_y = Math.Round(value, 1);
                     }
@@ -114,7 +117,7 @@ internal static class Hooks
                 if (basepoint_x != null)
                 {
                     using var json = JsonDocument.Parse(basepoint_x.Replace('$', ','));
-                    if (json.RootElement.GetProperty("value").TryGetDouble(out double value))
+                    if (json.RootElement.TryGetProperty("value", out var element) && double.TryParse(element.GetRawText(), out double value))
                     {
                         data.basepoint_x = Math.Round(value, 1);
                     }
@@ -129,7 +132,7 @@ internal static class Hooks
                 if (XMax_Y != null)
                 {
                     using var json = JsonDocument.Parse(XMax_Y.Replace('$', ','));
-                    if (json.RootElement.GetProperty("value").TryGetDouble(out double value))
+                    if (json.RootElement.TryGetProperty("value", out var element) && double.TryParse(element.GetRawText(), out double value))
                     {
                         data.XMax_Y = Math.Round(value, 1);
                     }
@@ -138,7 +141,7 @@ internal static class Hooks
                 if (XMax_X != null)
                 {
                     using var json = JsonDocument.Parse(XMax_X.Replace('$', ','));
-                    if (json.RootElement.GetProperty("value").TryGetDouble(out double value))
+                    if (json.RootElement.TryGetProperty("value", out var element) && double.TryParse(element.GetRawText(), out double value))
                     {
                         var XMax_X_Raw = Math.Round(value, 1);
                         data.XMax_X = XMax_X_Raw >= 2.5 && XMax_X_Raw <= 2.9 ? 2.7 : XMax_X_Raw;
