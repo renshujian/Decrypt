@@ -1,7 +1,7 @@
 ﻿using System.Windows;
 using System.Windows.Threading;
 
-namespace Report;
+namespace Sensor;
 
 /// <summary>
 /// Interaction logic for App.xaml
