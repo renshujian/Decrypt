@@ -1,9 +1,8 @@
 ﻿using System;
-using System.Buffers.Binary;
-using System.Collections.Generic;
-using System.Linq;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -11,6 +10,8 @@ namespace Sensor;
 
 public class Client : IDisposable
 {
+    public const int PACKET_SIZE = 20;
+
     #region 参数
 
     private double _sensitivity = 1.121;
@@ -58,20 +59,27 @@ public class Client : IDisposable
 
     #endregion
 
+    #region 信号
+
+    public long ReceiveCount { get; private set; }
+    public long ReceiveTicks { get; private set; }
+    public long ActionTicks { get; private set; }
+
+    #endregion
+
     private Socket? _socket = null;
     private CancellationTokenSource _cts = new CancellationTokenSource();
     private Task _task = Task.CompletedTask;
 
-    private readonly double[] _batch;
+    private int _batchSize;
+    private readonly byte[] _batch;
     private long _batchId;
     private int _batchIndex;
-    private bool _working;
-    private byte _channel = 255;
 
     /// <summary>
-    /// 批量接收扭矩数据。在读取传感器数据的线程上运行，不可以执行耗时操作，不可以操作UI。接收的List不会被Client保留或修改，应用程序可以安全的将List保留到需要的时候再处理。
+    /// 批量接收扭矩数据。在读取传感器数据的线程上运行，不可以执行耗时操作，不可以操作UI。参数为batchId, batch, count，其中batch在该委托返回后不允许再访问，不应该保留引用。
     /// </summary>
-    public event Action<long, List<double>>? OnBatchData;
+    public event Action<long, byte[], int>? OnBatchData;
 
     /// <summary>
     /// 接收读取线程发生的异常，不可以操作UI。
@@ -84,7 +92,8 @@ public class Client : IDisposable
         {
             throw new ArgumentException("invalid batch size");
         }
-        _batch = new double[batchSize];
+        _batchSize = batchSize;
+        _batch = new byte[batchSize * PACKET_SIZE];
         Coefficient = CalcCoefficient(Sensitivity, Range);
     }
 
@@ -104,13 +113,16 @@ public class Client : IDisposable
         if (_socket == null)
         {
             _socket = new Socket(SocketType.Dgram, ProtocolType.Udp);
+            _socket.ReceiveTimeout = 1000;
             _socket.Bind(LocalEndPoint);
-            //_socket.Connect(RemoteEndPoint);
+            _socket.ReceiveFrom(_batch, ref RemoteEndPoint);
+            _socket.Connect(RemoteEndPoint);
         }
         if (_task.IsCompleted)
         {
             _cts = new CancellationTokenSource();
-            _task = Task.Factory.StartNew(ReadThreadEntry, TaskCreationOptions.LongRunning).ContinueWith(task =>
+            _task = Task.Factory.StartNew(ReadThreadEntry, TaskCreationOptions.LongRunning);
+            _task.ContinueWith(task =>
             {
                 OnError?.Invoke(task.Exception!);
             }, TaskContinuationOptions.OnlyOnFaulted);
@@ -120,71 +132,70 @@ public class Client : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
-        _socket?.Close();
+        _socket = null;
     }
 
-    public void Start(byte channel = 255)
+    public void Start()
     {
         _batchId = 0;
         _batchIndex = 0;
         Connect();
-        if (channel != _channel)
-        {
-            byte[] selectChannel = { 0XFA, 0XAF, channel };
-            _socket!.Send(selectChannel);
-            _channel = channel;
-            // 采集盒收到报文并切换通道前的数据是无效的，需要丢弃。等10ms再开始保存数据
-            Thread.Sleep(10);
-        }
-        _working = true;
     }
 
     public void Stop()
     {
-        _working = false;
-        if (!SpinWait.SpinUntil(() => _batchIndex == 0, TimeSpan.FromSeconds(1)))
+        _cts.Cancel();
+        _task.Wait();
+        _socket?.Close();
+        _socket = null;
+        if (_batchIndex > 0)
         {
-            throw new TimeoutException("batch flush timeout");
+            OnBatchData?.Invoke(_batchId, _batch, _batchIndex);
+            _batchId++;
+            _batchIndex = 0;
         }
     }
 
     private void ReadThreadEntry()
     {
-        const int dataSize = 20;
-        byte[] buffer = new byte[dataSize];
+        long tick = 0;
+        Stopwatch stopwatch = Stopwatch.StartNew();
         while (!_cts.IsCancellationRequested)
         {
-            int length = _socket!.ReceiveFrom(buffer, ref RemoteEndPoint);
-            if (length < buffer.Length)
+            tick = stopwatch.ElapsedTicks;
+            int length = _socket!.Receive(_batch, _batchIndex * PACKET_SIZE, PACKET_SIZE, SocketFlags.None);
+            ReceiveTicks += stopwatch.ElapsedTicks - tick;
+            ReceiveCount++;
+            if (length < PACKET_SIZE)
             {
-                throw new ProtocolViolationException($"数据包长度{length}不足20");
+                throw new ProtocolViolationException($"数据包长度{length}不足{PACKET_SIZE}");
             }
-            if (buffer[0] != 0x10 || buffer[1] != 0x02)
+            _batchIndex++;
+            if (_batchIndex == _batchSize)
             {
-                throw new ProtocolViolationException($"数据包头{buffer[0]:X}{buffer[1]:X}不正确");
-            }
-            if (buffer[18] != 0x10 || buffer[19] != 0x03)
-            {
-                throw new ProtocolViolationException($"数据包尾{buffer[18]:X}{buffer[19]:X}不正确");
-            }
-            if (!_working)
-            {
-                if (_batchIndex > 0)
-                {
-                    OnBatchData?.Invoke(_batchId, _batch.Take(_batchIndex).ToList());
-                    _batchId++;
-                    _batchIndex = 0;
-                }
-                continue;
-            }
-            double value = BinaryPrimitives.ReadInt16BigEndian(buffer.AsSpan(2, 2));
-            _batch[_batchIndex++] = value;
-            if (_batchIndex == _batch.Length)
-            {
-                OnBatchData?.Invoke(_batchId, _batch.ToList());
+                tick = stopwatch.ElapsedTicks;
+                OnBatchData?.Invoke(_batchId, _batch, _batchIndex);
+                ActionTicks += stopwatch.ElapsedTicks - tick;
                 _batchId++;
                 _batchIndex = 0;
             }
         }
     }
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct Packet
+{
+    public byte Header0;
+    public byte Header1;
+    public short Ch0;
+    public short Ch3;
+    public short Ch4;
+    public short Ch5;
+    public short Ch6;
+    public short Ch8;
+    public short Ch9;
+    public short Ch12;
+    public byte Tail0;
+    public byte Tail1;
 }

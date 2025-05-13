@@ -16,13 +16,18 @@
         </Grid.ColumnDefinitions>
         <Grid.RowDefinitions>
             <RowDefinition Height="40" />
+            <RowDefinition Height="40" />
             <RowDefinition />
         </Grid.RowDefinitions>
-        <Button Name="StartButton" Click="StartButton_Click" Grid.ColumnSpan="2">开始采集</Button>
-        <Button Name="StopButton" Click="StopButton_Click" Grid.ColumnSpan="2" Visibility="Hidden">结束采集</Button>
-        <Label Grid.Column="2" Name="DataCount" HorizontalAlignment="Right">数据数：0</Label>
-        <Label Grid.Column="3" Name="DataMax" HorizontalAlignment="Right">最大值：</Label>
-        <ScottPlot:WpfPlot Name="WpfPlot1" Grid.Row="1" Grid.ColumnSpan="4" MouseMove="WpfPlot1_MouseMove">
+        <Button Name="StartButton" Click="StartButton_Click" Grid.RowSpan="2">开始采集</Button>
+        <Button Name="StopButton" Click="StopButton_Click" Grid.RowSpan="2" Visibility="Hidden">结束采集</Button>
+        <Label Grid.Column="1" Name="DataCount" HorizontalAlignment="Right">数据数：0</Label>
+        <Label Grid.Row="1" Grid.Column="1" Name="DataMax" HorizontalAlignment="Right">最大值：</Label>
+        <Label Grid.Row="0" Grid.Column="2" Name="WatchTick" HorizontalAlignment="Right">计时单位：</Label>
+        <Label Grid.Row="1" Grid.Column="2" Name="ReceiveCount" HorizontalAlignment="Right">收包数：0</Label>
+        <Label Grid.Row="0" Grid.Column="3" Name="ReceiveTicks" HorizontalAlignment="Right">收包计时：0</Label>
+        <Label Grid.Row="1" Grid.Column="3" Name="ActionTicks" HorizontalAlignment="Right">拷贝计时：0</Label>
+        <ScottPlot:WpfPlot Name="WpfPlot1" Grid.Row="2" Grid.ColumnSpan="4" MouseMove="WpfPlot1_MouseMove">
         </ScottPlot:WpfPlot>
     </Grid>
 </Window>
