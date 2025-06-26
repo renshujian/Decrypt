@@ -1,18 +1,18 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-	<AssemblyName>Report.CSV</AssemblyName>
-	<Version>1.0.0</Version>
+    <AssemblyName>Report.CSV</AssemblyName>
+    <Version>1.0.0</Version>
     <OutputType>Exe</OutputType>
     <TargetFramework>net6.0-windows</TargetFramework>
-	<SelfContained>true</SelfContained>
-	<Nullable>enable</Nullable>
+    <SelfContained>true</SelfContained>
+    <Nullable>enable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>
-	<None Include="config.ini" CopyToOutputDirectory="PreserveNewest" />	
+    <None Include="config.ini" CopyToOutputDirectory="PreserveNewest" />	
   </ItemGroup>
-	
+    
   <ItemGroup>
     <PackageReference Include="CsvHelper" Version="33.0.1" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Ini" Version="6.0.1" />
