@@ -56,6 +56,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ), typeof(HooksArgs));
         hooks.Compile();
         var onInput = hooks.ContinueWith<Task>("Hooks.OnInput(sn, config)").CreateDelegate();
+        var onCsvCreated = hooks.ContinueWith<Task<string>>("Hooks.OnCsvCreated(sn, config, file)").CreateDelegate();
         var generateReport = hooks.ContinueWith<Task>("Hooks.GenerateReport(sn, config, files)").CreateDelegate();
 
         InitializeComponent();
@@ -67,7 +68,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _delayTimer.Tick += async (o, e) =>
         {
             _delayTimer.Stop();
-            await (await onInput(new HooksArgs() { sn = input.Text, config = Config }));
+            await await onInput(new HooksArgs() { sn = input.Text, config = Config });
             if (CurrentSn != input.Text)
             {
                 ReportQueue.Clear();
@@ -78,26 +79,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         // config.ini修改时修改监视目录
         Config.GetReloadToken().RegisterChangeCallback(_ => _fileSystemWatcher.Path = Config["Report:WatchCsvDir"]!, null);
-        _fileSystemWatcher.Created += (o, e) =>
+        _fileSystemWatcher.Created += async (o, e) =>
         {
             if (!string.IsNullOrWhiteSpace(CurrentSn) && File.Exists(e.FullPath))
             {
-                Dispatcher.BeginInvoke(() =>
+                try
                 {
-                    ReportQueue.Enqueue(e.FullPath);
-                    int csvCount = int.Parse(Config["Report:CsvCount"]!);
-                    if (ReportQueue.Count >= csvCount)
+                    string item = await await onCsvCreated(new HooksArgs() { sn = CurrentSn, config = Config, file = e.FullPath });
+                    if (item == null)
                     {
-                        var files = ReportQueue.Dequeue(csvCount);
-                        generateReport(new HooksArgs() { sn = CurrentSn, config = Config, files = files }).ContinueWith((Task<Task> scriptTask) =>
-                        {
-                            scriptTask.Result.ContinueWith(hookTask =>
-                            {
-                                MessageBox.Show(hookTask.Exception!.ToString(), hookTask.Exception.GetType().FullName, MessageBoxButton.OK, MessageBoxImage.Error);
-                            }, TaskContinuationOptions.OnlyOnFaulted);
-                        });
+                        return;
                     }
-                });
+                    await await Dispatcher.InvokeAsync(async () =>
+                    {
+                        ReportQueue.Enqueue(item);
+                        int csvCount = int.Parse(Config["Report:CsvCount"]!);
+                        if (ReportQueue.Count >= csvCount)
+                        {
+                            var files = ReportQueue.Dequeue(csvCount);
+                            await await generateReport(new HooksArgs() { sn = CurrentSn, config = Config, files = files });
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(ex.ToString(), ex.GetType().FullName, MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
         };
         _fileSystemWatcher.IncludeSubdirectories = true;
@@ -118,6 +125,7 @@ public class HooksArgs
 {
     public string sn;
     public IConfiguration config;
+    public string? file;
     public List<string>? files;
 }
 

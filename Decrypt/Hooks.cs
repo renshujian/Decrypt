@@ -16,12 +16,20 @@ using System.Windows;
 
 internal static class Hooks
 {
+    /// <summary>
+    /// 扫码后触发
+    /// </summary>
+    /// <param name="sn">扫码枪输入的字符串</param>
+    /// <param name="config"></param>
+    /// <returns></returns>
+    /// <exception cref="ArgumentNullException"></exception>
+    /// <exception cref="InvalidOperationException"></exception>
     public static async Task OnInput(string sn, IConfiguration config)
     {
         // 对接 MES
         using HttpClient httpClient = new HttpClient();
-        string endpoint = config["SiteControl:Endpoint"] ?? throw new ArgumentNullException();
-        string site = config["SiteControl:MySite"] ?? throw new ArgumentNullException();
+        string endpoint = config["SiteControl:Endpoint"] ?? throw new ArgumentNullException("SiteControl:Endpoint");
+        string site = config["SiteControl:MySite"] ?? throw new ArgumentNullException("SiteControl:MySite");
         HttpResponseMessage response = await httpClient.PostAsync($"{endpoint}?data={site};{sn}", null);
         response.EnsureSuccessStatusCode();
         SiteControlRes res = await response.Content.ReadFromJsonAsync<SiteControlRes>() ?? throw new InvalidOperationException("HandleSiteControl失败");
@@ -29,7 +37,9 @@ internal static class Hooks
 
         // 对接 PLC
         using ModbusTcpClient modbusClient = new ModbusTcpClient();
-        modbusClient.Connect("192.168.1.1"/*应该设置为大端后PLC把256改1。, ModbusEndianness.BigEndian*/);
+        string tcpEndpoint = config["Modbus:Endpoint"] ?? throw new ArgumentNullException("Modbus:Endpoint");
+        bool bigEndian = config["Modbus:BigEndian"]?.ToLower() == "true";
+        modbusClient.Connect(tcpEndpoint, bigEndian ? ModbusEndianness.BigEndian : ModbusEndianness.LittleEndian);
         if (data[0] == "OK")
         {
             modbusClient.WriteSingleRegister(unitIdentifier: 1, registerAddress: 400, value: 0);
@@ -44,14 +54,73 @@ internal static class Hooks
 
     internal record class SiteControlRes(string msg, int code, string data);
 
+    /// <summary>
+    /// 检测到硬件上传的原始数据文件后触发
+    /// </summary>
+    /// <param name="sn"></param>
+    /// <param name="config"></param>
+    /// <param name="file">文件的绝对路径</param>
+    /// <returns>要保存进报告队列的字符串</returns>
+    /// <exception cref="ArgumentNullException"></exception>
+    public static async Task<string> OnCsvCreated(string sn, IConfiguration config, string file)
+    {
+        using ModbusTcpClient modbusClient = new ModbusTcpClient();
+        string tcpEndpoint = config["Modbus:Endpoint"] ?? throw new ArgumentNullException("Modbus:Endpoint");
+        bool bigEndian = config["Modbus:BigEndian"]?.ToLower() == "true";
+        modbusClient.Connect(tcpEndpoint, bigEndian ? ModbusEndianness.BigEndian : ModbusEndianness.LittleEndian);
+        int[] values = modbusClient.ReadHoldingRegisters<int>(unitIdentifier: 1, startingAddress: 410, count: 8).ToArray();
+        List<string> results = new();
+        results.Add(file);
+        for (int i = 0; i < values.Length; i++)
+        {
+            results.Add(((double)values[i] / 100).ToString());
+        }
+        return string.Join('|', results);
+    }
+
+    /// <summary>
+    /// 报告队列长度达到config["Report:CsvCount"]后触发
+    /// </summary>
+    /// <param name="sn"></param>
+    /// <param name="config"></param>
+    /// <param name="files">报告队列中保存的字符串</param>
+    /// <returns></returns>
     public static async Task GenerateReport(string sn, IConfiguration config, List<string> files)
     {
         // 等待文件上传完成并且不在主线程继续运行。后续的代码有可能并发执行，不允许写固定名称的文件
         await Task.Delay(300).ConfigureAwait(continueOnCapturedContext: false);
-        double InitialLowerLimit = Math.Round(double.Parse(config["Report:InitialLowerLimit"]!), 1);
-        double InitialUpperLimit = Math.Round(double.Parse(config["Report:InitialUpperLimit"]!), 1);
-        double FinalLowerLimit = Math.Round(double.Parse(config["Report:FinalLowerLimit"]!), 1);
-        double FinalUpperLimit = Math.Round(double.Parse(config["Report:FinalUpperLimit"]!), 1);
+        if (double.TryParse(config["Report:InitialLowerLimit"], out double InitialLowerLimit))
+        {
+            InitialLowerLimit = Math.Round(InitialLowerLimit, 1);
+        }
+        else
+        {
+            throw new ArgumentException("Report:InitialLowerLimit");
+        }
+        if (double.TryParse(config["Report:InitialUpperLimit"], out double InitialUpperLimit))
+        {
+            InitialUpperLimit = Math.Round(InitialUpperLimit, 1);
+        }
+        else
+        {
+            throw new ArgumentException("Report:InitialUpperLimit");
+        }
+        if (double.TryParse(config["Report:FinalLowerLimit"], out double FinalLowerLimit))
+        {
+            FinalLowerLimit = Math.Round(FinalLowerLimit, 1);
+        }
+        else
+        {
+            throw new ArgumentException("Report:FinalLowerLimit");
+        }
+        if (double.TryParse(config["Report:FinalUpperLimit"], out double FinalUpperLimit))
+        {
+            FinalUpperLimit = Math.Round(FinalUpperLimit, 1);
+        }
+        else
+        {
+            throw new ArgumentException("Report:FinalUpperLimit");
+        }
         List<Data> data = files.ConvertAll(ReadCsv);
         bool ok = true;
         for (int i = 0; i < data.Count; i++)
@@ -93,10 +162,17 @@ internal static class Hooks
         report.SaveAs(ok ? $@"{config["Report:OkDir"]}\OK_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss.fff")}.xlsx" : $@"{config["Report:NgDir"]}\NG_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss.fff")}.xlsx");
     }
 
-    private static Data ReadCsv(string path)
+    private static Data ReadCsv(string pathWithParam)
     {
-        Data data = new();
-        using var reader = new CsvReader(new StreamReader(path), new CsvConfiguration(CultureInfo.InvariantCulture) { IgnoreBlankLines = false, MissingFieldFound = null, BadDataFound = null });
+        string[] p = pathWithParam.Split('|');
+        Data data = new()
+        {
+            XDirMax = Double.Parse(p[1]),
+            XDirMin = Double.Parse(p[2]),
+            YDirMax = Double.Parse(p[3]),
+            YDirMin = Double.Parse(p[4]),
+        };
+        using var reader = new CsvReader(new StreamReader(p[0]), new CsvConfiguration(CultureInfo.InvariantCulture) { IgnoreBlankLines = false, MissingFieldFound = null, BadDataFound = null });
         while (reader.Read())
         {
             if (reader[0] == "EV_1")
@@ -165,7 +241,6 @@ internal static class Hooks
             }
         }
 
-
         return data;
     }
 
@@ -179,5 +254,9 @@ internal static class Hooks
         public string Result { get; set; } = string.Empty;
         public List<double> x { get; set; } = new();
         public List<double> y { get; set; } = new();
+        public double XDirMax { get; set; }
+        public double XDirMin { get; set; }
+        public double YDirMax { get; set; }
+        public double YDirMin { get; set; }
     }
 }
