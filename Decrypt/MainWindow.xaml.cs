@@ -52,7 +52,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         // 编译脚本
         var hooks = CSharpScript.Create(File.ReadAllText("Hooks.cs"), ScriptOptions.Default.WithReferences(
             typeof(ModbusTcpClient).Assembly, typeof(IConfiguration).Assembly, typeof(HttpClientJsonExtensions).Assembly, typeof(MessageBox).Assembly,
-            typeof(CsvReader).Assembly, typeof(XLTemplate).Assembly, typeof(Plot).Assembly
+            typeof(CsvReader).Assembly, typeof(XLTemplate).Assembly, typeof(Plot).Assembly, typeof(ConfigurationBinder).Assembly
         ), typeof(HooksArgs));
         hooks.Compile();
         var onInput = hooks.ContinueWith<Task>("Hooks.OnInput(sn, config)").CreateDelegate();

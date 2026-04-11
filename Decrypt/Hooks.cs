@@ -26,6 +26,8 @@ internal static class Hooks
     /// <exception cref="InvalidOperationException"></exception>
     public static async Task OnInput(string sn, IConfiguration config)
     {
+        if (string.Equals(config["SiteControl:Enable"], "false", StringComparison.OrdinalIgnoreCase)) return;
+
         // 对接 MES
         using HttpClient httpClient = new HttpClient();
         string endpoint = config["SiteControl:Endpoint"] ?? throw new ArgumentNullException("SiteControl:Endpoint");
@@ -89,44 +91,26 @@ internal static class Hooks
     {
         // 等待文件上传完成并且不在主线程继续运行。后续的代码有可能并发执行，不允许写固定名称的文件
         await Task.Delay(300).ConfigureAwait(continueOnCapturedContext: false);
-        if (double.TryParse(config["Report:InitialLowerLimit"], out double InitialLowerLimit))
-        {
-            InitialLowerLimit = Math.Round(InitialLowerLimit, 1);
-        }
-        else
-        {
-            throw new ArgumentException("Report:InitialLowerLimit");
-        }
-        if (double.TryParse(config["Report:InitialUpperLimit"], out double InitialUpperLimit))
-        {
-            InitialUpperLimit = Math.Round(InitialUpperLimit, 1);
-        }
-        else
-        {
-            throw new ArgumentException("Report:InitialUpperLimit");
-        }
-        if (double.TryParse(config["Report:FinalLowerLimit"], out double FinalLowerLimit))
-        {
-            FinalLowerLimit = Math.Round(FinalLowerLimit, 1);
-        }
-        else
-        {
-            throw new ArgumentException("Report:FinalLowerLimit");
-        }
-        if (double.TryParse(config["Report:FinalUpperLimit"], out double FinalUpperLimit))
-        {
-            FinalUpperLimit = Math.Round(FinalUpperLimit, 1);
-        }
-        else
-        {
-            throw new ArgumentException("Report:FinalUpperLimit");
-        }
+        LimitGroup group1 = config.GetRequiredSection("LimitGroup1").Get<LimitGroup>() ?? throw new ArgumentNullException("LimitGroup1");
+        LimitGroup group2 = config.GetRequiredSection("LimitGroup2").Get<LimitGroup>() ?? throw new ArgumentNullException("LimitGroup2");
         List<Data> data = files.ConvertAll(ReadCsv);
         bool ok = true;
         for (int i = 0; i < data.Count; i++)
         {
+            LimitGroup limitGroup;
             data[i].Index = i + 1;
-            if (data[i].basepoint_y > InitialLowerLimit && data[i].basepoint_y < InitialUpperLimit && data[i].XMax_Y > FinalLowerLimit && data[i].XMax_Y < FinalUpperLimit)
+            if (i >= 4 && i <= 7)
+            {
+                data[i].LimitGroup = 2;
+                limitGroup = group2;
+            }
+            else
+            {
+                data[i].LimitGroup = 1;
+                limitGroup = group1;
+            }
+
+            if (data[i].basepoint_y > limitGroup.InitialLowerLimit && data[i].basepoint_y < limitGroup.InitialUpperLimit && data[i].XMax_Y > limitGroup.FinalLowerLimit && data[i].XMax_Y < limitGroup.FinalUpperLimit)
             {
                 data[i].Result = "pass";
             }
@@ -139,10 +123,14 @@ internal static class Hooks
 
         using var report = new XLTemplate("template.xlsx");
         report.AddVariable("SN", sn);
-        report.AddVariable("InitialLowerLimit", InitialLowerLimit);
-        report.AddVariable("InitialUpperLimit", InitialUpperLimit);
-        report.AddVariable("FinalLowerLimit", FinalLowerLimit);
-        report.AddVariable("FinalUpperLimit", FinalUpperLimit);
+        report.AddVariable("InitialLowerLimit1", group1.InitialLowerLimit);
+        report.AddVariable("InitialUpperLimit1", group1.InitialUpperLimit);
+        report.AddVariable("FinalLowerLimit1", group1.FinalLowerLimit);
+        report.AddVariable("FinalUpperLimit1", group1.FinalUpperLimit);
+        report.AddVariable("InitialLowerLimit2", group2.InitialLowerLimit);
+        report.AddVariable("InitialUpperLimit2", group2.InitialUpperLimit);
+        report.AddVariable("FinalLowerLimit2", group2.FinalLowerLimit);
+        report.AddVariable("FinalUpperLimit2", group2.FinalUpperLimit);
         report.AddVariable("Tests", data);
         report.Generate();
 
@@ -244,6 +232,14 @@ internal static class Hooks
         return data;
     }
 
+    internal class LimitGroup
+    {
+        public double InitialLowerLimit { get; set; }
+        public double InitialUpperLimit { get; set; }
+        public double FinalLowerLimit { get; set; }
+        public double FinalUpperLimit { get; set; }
+    }
+
     internal class Data
     {
         public int Index { get; set; }
@@ -251,6 +247,7 @@ internal static class Hooks
         public double basepoint_y { get; set; }
         public double XMax_X { get; set; }
         public double XMax_Y { get; set; }
+        public int LimitGroup { get; set; }
         public string Result { get; set; } = string.Empty;
         public List<double> x { get; set; } = new();
         public List<double> y { get; set; } = new();
