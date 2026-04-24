@@ -66,16 +66,22 @@ internal static class Hooks
     /// <exception cref="ArgumentNullException"></exception>
     public static async Task<string> OnCsvCreated(string sn, IConfiguration config, string file)
     {
+        // 等待PLC更新数值再读寄存器
+        await Task.Delay(500).ConfigureAwait(continueOnCapturedContext: false);
         using ModbusTcpClient modbusClient = new ModbusTcpClient();
         string tcpEndpoint = config["Modbus:Endpoint"] ?? throw new ArgumentNullException("Modbus:Endpoint");
         bool bigEndian = config["Modbus:BigEndian"]?.ToLower() == "true";
         modbusClient.Connect(tcpEndpoint, bigEndian ? ModbusEndianness.BigEndian : ModbusEndianness.LittleEndian);
-        int[] values = modbusClient.ReadHoldingRegisters<int>(unitIdentifier: 1, startingAddress: 410, count: 8).ToArray();
+        var values = modbusClient.ReadHoldingRegisters<short>(unitIdentifier: 1, startingAddress: 410, count: 8).ToArray();
         List<string> results = new();
         results.Add(file);
         for (int i = 0; i < values.Length; i++)
         {
-            results.Add(((double)values[i] / 100).ToString());
+            if (i % 2 == 0)
+            {
+                // 将 410, 412, 414, 416 的 int16 以浮点除法除以 100 后加入数据集
+                results.Add(((double)values[i] / 100).ToString());
+            }
         }
         return string.Join('|', results);
     }
