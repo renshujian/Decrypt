@@ -1,10 +1,8 @@
-﻿using ClosedXML.Report;
-using CsvHelper;
+﻿using CsvHelper;
 using FluentModbus;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
 using Microsoft.Extensions.Configuration;
-using ScottPlot;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -12,6 +10,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Net.Http.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
@@ -52,11 +51,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         // 编译脚本
         var hooks = CSharpScript.Create(File.ReadAllText("Hooks.cs"), ScriptOptions.Default.WithReferences(
             typeof(ModbusTcpClient).Assembly, typeof(IConfiguration).Assembly, typeof(HttpClientJsonExtensions).Assembly, typeof(MessageBox).Assembly,
-            typeof(CsvReader).Assembly, typeof(XLTemplate).Assembly, typeof(Plot).Assembly, typeof(ConfigurationBinder).Assembly
+            typeof(CsvReader).Assembly, typeof(ConfigurationBinder).Assembly
         ), typeof(HooksArgs));
         hooks.Compile();
         var onInput = hooks.ContinueWith<Task>("Hooks.OnInput(sn, config)").CreateDelegate();
-        var onCsvCreated = hooks.ContinueWith<Task<string>>("Hooks.OnCsvCreated(sn, config, file)").CreateDelegate();
+        var onCsvCreated = hooks.ContinueWith<Task<string>>("Hooks.OnCsvCreated(sn, config, file, index)").CreateDelegate();
         var generateReport = hooks.ContinueWith<Task>("Hooks.GenerateReport(sn, config, files)").CreateDelegate();
 
         InitializeComponent();
@@ -85,7 +84,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 try
                 {
-                    string item = await await onCsvCreated(new HooksArgs() { sn = CurrentSn, config = Config, file = e.FullPath });
+                    string item = await await onCsvCreated(new HooksArgs() { sn = CurrentSn, config = Config, file = e.FullPath, index = ReportQueue.ClaimIndex() });
                     if (item == null)
                     {
                         return;
@@ -96,7 +95,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                         int csvCount = int.Parse(Config["Report:CsvCount"]!);
                         if (ReportQueue.Count >= csvCount)
                         {
-                            var files = ReportQueue.Dequeue(csvCount);
+                            List<string> files = ReportQueue.Dequeue(csvCount);
                             await await generateReport(new HooksArgs() { sn = CurrentSn, config = Config, files = files });
                         }
                     });
@@ -126,6 +125,7 @@ public class HooksArgs
     public string sn;
     public IConfiguration config;
     public string? file;
+    public int index;
     public List<string>? files;
 }
 
@@ -133,6 +133,7 @@ public sealed class ReportQueue : IEnumerable<string>, IDisposable
 {
     public string Path { get; } = nameof(ReportQueue);
     private StreamWriter _writer;
+    private int _index;
     public ObservableCollection<string> Items { get; } = new();
     public int Count => Items.Count;
 
@@ -150,7 +151,15 @@ public sealed class ReportQueue : IEnumerable<string>, IDisposable
             AutoFlush = true,
         };
         _writer.BaseStream.Position = _writer.BaseStream.Length;
+
+        // 从持久化的 ReportQueue.Count 同步计数，保证重启后序号连续
+        _index = Count;
     }
+
+    /// <summary>
+    /// 原子地领取下一个 0 基序号（本产品内第 N 个 CSV）
+    /// </summary>
+    public int ClaimIndex() => Interlocked.Increment(ref _index) - 1;
 
     public void Dispose() => _writer.Dispose();
 
@@ -185,6 +194,7 @@ public sealed class ReportQueue : IEnumerable<string>, IDisposable
     {
         Items.Clear();
         _writer.BaseStream.SetLength(0);
+        Interlocked.Exchange(ref _index, 0);
     }
 
     public IEnumerator<string> GetEnumerator() => Items.GetEnumerator();

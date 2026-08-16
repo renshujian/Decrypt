@@ -1,9 +1,7 @@
-﻿using ClosedXML.Report;
-using CsvHelper;
+﻿using CsvHelper;
 using CsvHelper.Configuration;
 using FluentModbus;
 using Microsoft.Extensions.Configuration;
-using ScottPlot;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -26,64 +24,154 @@ internal static class Hooks
     /// <exception cref="InvalidOperationException"></exception>
     public static async Task OnInput(string sn, IConfiguration config)
     {
-        if (string.Equals(config["SiteControl:Enable"], "false", StringComparison.OrdinalIgnoreCase)) return;
+        if (string.Equals(config["Mes:Enable"], "false", StringComparison.OrdinalIgnoreCase)) return;
 
-        // 对接 MES
+        // 调用 MES 校验接口（产品条码验证 VerifyProductSn）
         using HttpClient httpClient = new HttpClient();
-        string endpoint = config["SiteControl:Endpoint"] ?? throw new ArgumentNullException("SiteControl:Endpoint");
-        string site = config["SiteControl:MySite"] ?? throw new ArgumentNullException("SiteControl:MySite");
-        HttpResponseMessage response = await httpClient.PostAsync($"{endpoint}?data={site};{sn}", null);
-        response.EnsureSuccessStatusCode();
-        SiteControlRes res = await response.Content.ReadFromJsonAsync<SiteControlRes>() ?? throw new InvalidOperationException("HandleSiteControl失败");
-        string[] data = res.data.Split(';');
+        string endpoint = config["Mes:Endpoint"] ?? throw new ArgumentNullException("Mes:Endpoint");
+        string process = config["Mes:Process"] ?? throw new ArgumentNullException("Mes:Process");
+        int invOrgId = int.TryParse(config["Mes:InvOrgId"], out int org) ? org : 1;
+        string language = string.IsNullOrWhiteSpace(config["Mes:Language"]) ? "zh-CN" : config["Mes:Language"]!;
 
-        // 对接 PLC
+        var request = new
+        {
+            ApiType = "MomApiController",
+            Parameters = new object[]
+            {
+                new { Value = new { Sn = sn, Process = process } },
+                new { Value = invOrgId },
+            },
+            Method = "VerifyProductSn",
+            Context = new { InvOrgId = invOrgId, Language = language },
+        };
+
+        HttpResponseMessage response = await httpClient.PostAsJsonAsync(endpoint, request);
+        response.EnsureSuccessStatusCode();
+        VerifyRes res = await response.Content.ReadFromJsonAsync<VerifyRes>() ?? throw new InvalidOperationException("VerifyProductSn 返回为空");
+
+        // 对接 PLC：校验通过写 0，不通过写 1
         using ModbusTcpClient modbusClient = new ModbusTcpClient();
         string tcpEndpoint = config["Modbus:Endpoint"] ?? throw new ArgumentNullException("Modbus:Endpoint");
         bool bigEndian = config["Modbus:BigEndian"]?.ToLower() == "true";
         modbusClient.Connect(tcpEndpoint, bigEndian ? ModbusEndianness.BigEndian : ModbusEndianness.LittleEndian);
-        if (data[0] == "OK")
+        if (res.Success && IsValidResult(res.Result))
         {
             modbusClient.WriteSingleRegister(unitIdentifier: 1, registerAddress: 400, value: 0);
         }
-        else if (data[0] == "NG")
+        else
         {
-            MessageBox.Show(data[1]);
+            string message = !string.IsNullOrWhiteSpace(res.Message)
+                ? res.Message!
+                : res.Result.ValueKind == JsonValueKind.False ? "条码工序不一致" : "条码校验失败";
+            MessageBox.Show(message);
             modbusClient.WriteSingleRegister(unitIdentifier: 1, registerAddress: 400, value: 1);
         }
         modbusClient.Disconnect();
     }
 
-    internal record class SiteControlRes(string msg, int code, string data);
+    private static bool IsValidResult(JsonElement result)
+    {
+        if (result.ValueKind == JsonValueKind.False) return false;
+        if (result.ValueKind == JsonValueKind.Null || result.ValueKind == JsonValueKind.Undefined) return false;
+        if (result.ValueKind == JsonValueKind.String)
+        {
+            string s = result.GetString() ?? "";
+            return !string.IsNullOrWhiteSpace(s) && !s.Equals("false", StringComparison.OrdinalIgnoreCase);
+        }
+        return true;
+    }
+
+    internal record class VerifyRes(bool Success, string? Message, JsonElement Result);
 
     /// <summary>
-    /// 检测到硬件上传的原始数据文件后触发
+    /// 检测到硬件上传的原始数据文件后触发，解析参数并通过上传工艺参数接口上传
     /// </summary>
     /// <param name="sn"></param>
     /// <param name="config"></param>
     /// <param name="file">文件的绝对路径</param>
-    /// <returns>要保存进报告队列的字符串</returns>
+    /// <param name="index">该产品内 CSV 的序号，从 0 开始</param>
+    /// <returns>上传成功后返回文件名</returns>
     /// <exception cref="ArgumentNullException"></exception>
-    public static async Task<string> OnCsvCreated(string sn, IConfiguration config, string file)
+    public static async Task<string> OnCsvCreated(string sn, IConfiguration config, string file, int index)
     {
-        // 等待PLC更新数值再读寄存器
+        // 等待文件写入完成后再解析
         await Task.Delay(500).ConfigureAwait(continueOnCapturedContext: false);
-        using ModbusTcpClient modbusClient = new ModbusTcpClient();
-        string tcpEndpoint = config["Modbus:Endpoint"] ?? throw new ArgumentNullException("Modbus:Endpoint");
-        bool bigEndian = config["Modbus:BigEndian"]?.ToLower() == "true";
-        modbusClient.Connect(tcpEndpoint, bigEndian ? ModbusEndianness.BigEndian : ModbusEndianness.LittleEndian);
-        var values = modbusClient.ReadHoldingRegisters<short>(unitIdentifier: 1, startingAddress: 410, count: 8).ToArray();
-        List<string> results = new();
-        results.Add(file);
-        for (int i = 0; i < values.Length; i++)
+
+        // 解析 CSV 得到测量参数
+        Data data = ReadCsv(file);
+
+        // 读取所有上下限组（数组形式：[LimitGroups:0]、[LimitGroups:1] ...）
+        List<LimitGroup> groups = config.GetSection("LimitGroups").Get<List<LimitGroup>>() ?? new List<LimitGroup>();
+        if (groups.Count == 0)
         {
-            if (i % 2 == 0)
-            {
-                // 将 410, 412, 414, 416 的 int16 以浮点除法除以 100 后加入数据集
-                results.Add(((double)values[i] / 100).ToString());
-            }
+            throw new InvalidOperationException("未配置 [LimitGroups:0...] 上下限组");
         }
-        return string.Join('|', results);
+
+        // 根据产品内 CSV 顺序（index 从 0 开始）确定使用的上下限组索引
+        int groupIndex = ResolveLimitGroupIndex(config, index);
+        if (groupIndex < 0 || groupIndex >= groups.Count)
+        {
+            throw new InvalidOperationException($"LimitGroupMap 引用了不存在的上下限组索引 {groupIndex}，LimitGroups 共 {groups.Count} 组");
+        }
+        LimitGroup group = groups[groupIndex];
+
+        // 判定是否合格
+        bool ok = data.basepoint_y > group.InitialLowerLimit && data.basepoint_y < group.InitialUpperLimit
+            && data.XMax_Y > group.FinalLowerLimit && data.XMax_Y < group.FinalUpperLimit;
+
+        // 采集设备参数集合（含实际使用的上下限）
+        List<object> details = new()
+        {
+            new { ParameterName = "起始浮动力", ParameterValue = data.basepoint_y, Unit = data.basepoint_y_unit },
+            new { ParameterName = "起始浮动位移", ParameterValue = data.basepoint_x, Unit = data.basepoint_x_unit },
+            new { ParameterName = "最终浮动力", ParameterValue = data.XMax_Y, Unit = data.XMax_Y_unit },
+            new { ParameterName = "最终浮动位移", ParameterValue = data.XMax_X, Unit = data.XMax_X_unit },
+            new { ParameterName = "起始浮动力下限", ParameterValue = group.InitialLowerLimit, Unit = "" },
+            new { ParameterName = "起始浮动力上限", ParameterValue = group.InitialUpperLimit, Unit = "" },
+            new { ParameterName = "最终浮动力下限", ParameterValue = group.FinalLowerLimit, Unit = "" },
+            new { ParameterName = "最终浮动力上限", ParameterValue = group.FinalUpperLimit, Unit = "" },
+        };
+
+        string endpoint = config["Mes:Endpoint"] ?? throw new ArgumentNullException("Mes:Endpoint");
+        string equipAccountCode = config["Mes:EquipAccountCode"] ?? "";
+        string snType = string.IsNullOrWhiteSpace(config["Mes:SnType"]) ? "1" : config["Mes:SnType"]!;
+        int invOrgId = int.TryParse(config["Mes:InvOrgId"], out int org) ? org : 1;
+        string language = string.IsNullOrWhiteSpace(config["Mes:Language"]) ? "zh-CN" : config["Mes:Language"]!;
+        string method = string.IsNullOrWhiteSpace(config["Mes:Method"]) ? "UploadIctEquipmentWaferData" : config["Mes:Method"]!;
+
+        var request = new
+        {
+            ApiType = "MomApiController",
+            Parameters = new object[]
+            {
+                new
+                {
+                    Value = new
+                    {
+                        EquipAccountCode = equipAccountCode,
+                        Sn = sn,
+                        SnType = snType,
+                        CollectionDate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                        TestResult = ok ? "OK" : "NG",
+                        Details = details,
+                    },
+                },
+                new { Value = invOrgId },
+            },
+            Method = method,
+            Context = new { InvOrgId = invOrgId, Language = language },
+        };
+
+        using HttpClient httpClient = new HttpClient();
+        HttpResponseMessage response = await httpClient.PostAsJsonAsync(endpoint, request);
+        response.EnsureSuccessStatusCode();
+        UploadRes res = await response.Content.ReadFromJsonAsync<UploadRes>() ?? throw new InvalidOperationException("上传工艺参数返回为空");
+        if (!res.Success)
+        {
+            throw new InvalidOperationException("上传工艺参数失败：" + (res.Message ?? ""));
+        }
+
+        return file;
     }
 
     /// <summary>
@@ -92,81 +180,42 @@ internal static class Hooks
     /// <param name="sn"></param>
     /// <param name="config"></param>
     /// <param name="files">报告队列中保存的字符串</param>
-    /// <returns></returns>
     public static async Task GenerateReport(string sn, IConfiguration config, List<string> files)
     {
-        // 等待文件上传完成并且不在主线程继续运行。后续的代码有可能并发执行，不允许写固定名称的文件
-        await Task.Delay(300).ConfigureAwait(continueOnCapturedContext: false);
-        LimitGroup group1 = config.GetRequiredSection("LimitGroup1").Get<LimitGroup>() ?? throw new ArgumentNullException("LimitGroup1");
-        LimitGroup group2 = config.GetRequiredSection("LimitGroup2").Get<LimitGroup>() ?? throw new ArgumentNullException("LimitGroup2");
-        List<Data> data = files.ConvertAll(ReadCsv);
-        bool ok = true;
-        for (int i = 0; i < data.Count; i++)
-        {
-            LimitGroup limitGroup;
-            data[i].Index = i + 1;
-            if (i >= 4 && i <= 7)
-            {
-                data[i].LimitGroup = 2;
-                limitGroup = group2;
-            }
-            else
-            {
-                data[i].LimitGroup = 1;
-                limitGroup = group1;
-            }
-
-            if (data[i].basepoint_y > limitGroup.InitialLowerLimit && data[i].basepoint_y < limitGroup.InitialUpperLimit && data[i].XMax_Y > limitGroup.FinalLowerLimit && data[i].XMax_Y < limitGroup.FinalUpperLimit)
-            {
-                data[i].Result = "pass";
-            }
-            else
-            {
-                data[i].Result = "fail";
-                ok = false;
-            }
-        }
-
-        using var report = new XLTemplate("template.xlsx");
-        report.AddVariable("SN", sn);
-        report.AddVariable("InitialLowerLimit1", group1.InitialLowerLimit);
-        report.AddVariable("InitialUpperLimit1", group1.InitialUpperLimit);
-        report.AddVariable("FinalLowerLimit1", group1.FinalLowerLimit);
-        report.AddVariable("FinalUpperLimit1", group1.FinalUpperLimit);
-        report.AddVariable("InitialLowerLimit2", group2.InitialLowerLimit);
-        report.AddVariable("InitialUpperLimit2", group2.InitialUpperLimit);
-        report.AddVariable("FinalLowerLimit2", group2.FinalLowerLimit);
-        report.AddVariable("FinalUpperLimit2", group2.FinalUpperLimit);
-        report.AddVariable("Tests", data);
-        report.Generate();
-
-        int row = 6 + data.Count;
-        int col = 2;
-        for (int i = 0; i < data.Count; i++)
-        {
-            using var plot = new Plot();
-            plot.Add.Scatter(data[i].x, data[i].y);
-            string pngName = $"{Guid.NewGuid()}.png";
-            plot.SavePng(pngName, 600, 500);
-            var worksheet = report.Workbook.Worksheet(1);
-            var picture = worksheet.AddPicture(pngName).MoveTo(worksheet.Cell(row + 28 * i, col));
-            File.Delete(pngName);
-        }
-
-        report.SaveAs(ok ? $@"{config["Report:OkDir"]}\OK_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss.fff")}.xlsx" : $@"{config["Report:NgDir"]}\NG_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss.fff")}.xlsx");
+        await Task.CompletedTask;
     }
 
-    private static Data ReadCsv(string pathWithParam)
+    internal record class UploadRes(bool Success, string? Message);
+
+    private static int ResolveLimitGroupIndex(IConfiguration config, int index)
     {
-        string[] p = pathWithParam.Split('|');
-        Data data = new()
+        string? mapRaw = config["Report:LimitGroupMap"];
+        if (string.IsNullOrWhiteSpace(mapRaw))
         {
-            XDirMax = Double.Parse(p[1]),
-            XDirMin = Double.Parse(p[2]),
-            YDirMax = Double.Parse(p[3]),
-            YDirMin = Double.Parse(p[4]),
-        };
-        using var reader = new CsvReader(new StreamReader(p[0]), new CsvConfiguration(CultureInfo.InvariantCulture) { IgnoreBlankLines = false, MissingFieldFound = null, BadDataFound = null });
+            return 0;
+        }
+
+        List<int> map = new();
+        foreach (string part in mapRaw.Split(','))
+        {
+            if (int.TryParse(part.Trim(), out int n) && n >= 0)
+            {
+                map.Add(n);
+            }
+        }
+
+        if (map.Count == 0)
+        {
+            return 0;
+        }
+        // 超出配置长度时循环使用
+        return map[index % map.Count];
+    }
+
+    private static Data ReadCsv(string file)
+    {
+        Data data = new();
+        using var reader = new CsvReader(new StreamReader(file), new CsvConfiguration(CultureInfo.InvariantCulture) { IgnoreBlankLines = false, MissingFieldFound = null, BadDataFound = null });
         while (reader.Read())
         {
             if (reader[0] == "EV_1")
@@ -174,68 +223,47 @@ internal static class Hooks
                 reader.Read();
                 reader.ReadHeader();
                 reader.Read();
-                string? basepoint_y = reader["basepoint_y"];
-                if (basepoint_y != null)
-                {
-                    using var json = JsonDocument.Parse(basepoint_y.Replace('$', ','));
-                    if (json.RootElement.TryGetProperty("value", out var element) && double.TryParse(element.GetRawText(), out double value))
-                    {
-                        data.basepoint_y = Math.Round(value, 1);
-                    }
-                }
-                string? basepoint_x = reader["basepoint_x"];
-                if (basepoint_x != null)
-                {
-                    using var json = JsonDocument.Parse(basepoint_x.Replace('$', ','));
-                    if (json.RootElement.TryGetProperty("value", out var element) && double.TryParse(element.GetRawText(), out double value))
-                    {
-                        data.basepoint_x = Math.Round(value, 1);
-                    }
-                }
+                (data.basepoint_y, data.basepoint_y_unit) = ReadValueUnit(reader["basepoint_y"]);
+                (data.basepoint_x, data.basepoint_x_unit) = ReadValueUnit(reader["basepoint_x"]);
             }
             else if (reader[0] == "EV_CURVE")
             {
                 reader.Read();
                 reader.ReadHeader();
                 reader.Read();
-                string? XMax_Y = reader["XMax_Y"];
-                if (XMax_Y != null)
-                {
-                    using var json = JsonDocument.Parse(XMax_Y.Replace('$', ','));
-                    if (json.RootElement.TryGetProperty("value", out var element) && double.TryParse(element.GetRawText(), out double value))
-                    {
-                        data.XMax_Y = Math.Round(value, 1);
-                    }
-                }
-                string? XMax_X = reader["XMax_X"];
-                if (XMax_X != null)
-                {
-                    using var json = JsonDocument.Parse(XMax_X.Replace('$', ','));
-                    if (json.RootElement.TryGetProperty("value", out var element) && double.TryParse(element.GetRawText(), out double value))
-                    {
-                        var XMax_X_Raw = Math.Round(value, 1);
-                        data.XMax_X = XMax_X_Raw >= 2.5 && XMax_X_Raw <= 2.9 ? 2.7 : XMax_X_Raw;
-                    }
-                }
-            }
-            else if (reader[0] == "curveDatas")
-            {
-                int count = reader.GetField<int>(1);
-                reader.Read();
-                reader.ReadHeader();
-                while (reader.Read())
-                {
-                    if (string.IsNullOrWhiteSpace(reader[0]))
-                    {
-                        break;
-                    }
-                    data.x.Add(reader.GetField<double>("x"));
-                    data.y.Add(reader.GetField<double>("y"));
-                }
+                (data.XMax_Y, data.XMax_Y_unit) = ReadValueUnit(reader["XMax_Y"]);
+                (double xMaxX, string xMaxXUnit) = ReadValueUnit(reader["XMax_X"]);
+                data.XMax_X = xMaxX >= 2.5 && xMaxX <= 2.9 ? 2.7 : xMaxX;
+                data.XMax_X_unit = xMaxXUnit;
             }
         }
-
         return data;
+    }
+
+    private static (double Value, string Unit) ReadValueUnit(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return (0, "");
+        }
+        using var json = JsonDocument.Parse(raw.Replace('$', ','));
+        JsonElement root = json.RootElement;
+        double value = 0;
+        string unit = "";
+
+        JsonElement v;
+        if ((root.TryGetProperty("value", out v) || root.TryGetProperty("Value", out v)) && double.TryParse(v.GetRawText(), out double parsed))
+        {
+            value = parsed;
+        }
+
+        JsonElement u;
+        if (root.TryGetProperty("unit", out u) || root.TryGetProperty("Unit", out u))
+        {
+            unit = u.ValueKind == JsonValueKind.String ? (u.GetString() ?? "") : u.GetRawText();
+        }
+
+        return (Math.Round(value, 1), unit);
     }
 
     internal class LimitGroup
@@ -248,18 +276,13 @@ internal static class Hooks
 
     internal class Data
     {
-        public int Index { get; set; }
         public double basepoint_x { get; set; }
+        public string basepoint_x_unit { get; set; } = "";
         public double basepoint_y { get; set; }
+        public string basepoint_y_unit { get; set; } = "";
         public double XMax_X { get; set; }
+        public string XMax_X_unit { get; set; } = "";
         public double XMax_Y { get; set; }
-        public int LimitGroup { get; set; }
-        public string Result { get; set; } = string.Empty;
-        public List<double> x { get; set; } = new();
-        public List<double> y { get; set; } = new();
-        public double XDirMax { get; set; }
-        public double XDirMin { get; set; }
-        public double YDirMax { get; set; }
-        public double YDirMin { get; set; }
+        public string XMax_Y_unit { get; set; } = "";
     }
 }

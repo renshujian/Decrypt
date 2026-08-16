@@ -21,7 +21,7 @@
         <TextBox Grid.Column="1" Height="36" Name="input" TextChanged="input_TextChanged" InputMethod.IsInputMethodEnabled="False"/>
         <TextBlock Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Right">当前条码：</TextBlock>
         <TextBlock Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" Text="{Binding CurrentSn}" />
-        <TextBlock Grid.Row="2" Grid.ColumnSpan="2" VerticalAlignment="Bottom" HorizontalAlignment="Center" FontSize="18">请保持软件开启以自动生成报告。待生成报告的文件：</TextBlock>
+        <TextBlock Grid.Row="2" Grid.ColumnSpan="2" VerticalAlignment="Bottom" HorizontalAlignment="Center" FontSize="18">请保持软件开启以自动处理。已处理的文件：</TextBlock>
         <ListBox Grid.Row="3" Grid.ColumnSpan="2" ItemsSource="{Binding ReportQueue.Items}" />
     </Grid>
 </Window>
