@@ -1,14 +1,18 @@
-﻿using CsvHelper;
+﻿using ClosedXML.Report;
+using CsvHelper;
 using FluentModbus;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
 using Microsoft.Extensions.Configuration;
+using ScottPlot;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
+using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -51,12 +55,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         // 编译脚本
         var hooks = CSharpScript.Create(File.ReadAllText("Hooks.cs"), ScriptOptions.Default.WithReferences(
             typeof(ModbusTcpClient).Assembly, typeof(IConfiguration).Assembly, typeof(HttpClientJsonExtensions).Assembly, typeof(MessageBox).Assembly,
-            typeof(CsvReader).Assembly, typeof(ConfigurationBinder).Assembly
+            typeof(CsvReader).Assembly, typeof(XLTemplate).Assembly, typeof(Plot).Assembly, typeof(ConfigurationBinder).Assembly 
         ), typeof(HooksArgs));
-        hooks.Compile();
-        var onInput = hooks.ContinueWith<Task>("Hooks.OnInput(sn, config)").CreateDelegate();
-        var onCsvCreated = hooks.ContinueWith<Task<string>>("Hooks.OnCsvCreated(sn, config, file, index)").CreateDelegate();
-        var generateReport = hooks.ContinueWith<Task>("Hooks.GenerateReport(sn, config, files)").CreateDelegate();
+        var diagnostics = hooks.Compile();
+        if (diagnostics.Any(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error))
+        {
+            MessageBox.Show(string.Join(Environment.NewLine, diagnostics.Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error)), "Hooks.cs 编译失败",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        var onInput = hooks.ContinueWith<Task>("Hooks.OnInput(sn, config, http)").CreateDelegate();
+        var onCsvCreated = hooks.ContinueWith<Task<string>>("Hooks.OnCsvCreated(sn, config, file, index, http)").CreateDelegate();
+        var generateReport = hooks.ContinueWith<Task>("Hooks.GenerateReport(sn, config, files, http)").CreateDelegate();
 
         InitializeComponent();
         DataContext = this;
@@ -67,13 +76,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _delayTimer.Tick += async (o, e) =>
         {
             _delayTimer.Stop();
-            await await onInput(new HooksArgs() { sn = input.Text, config = Config });
-            if (CurrentSn != input.Text)
-            {
-                ReportQueue.Clear();
-                CurrentSn = input.Text;
-            }
-            input.Text = "";
+            await await onInput(new HooksArgs() { sn = input.Text, config = Config, http = Http });
+                if (CurrentSn != input.Text)
+                {
+                    ReportQueue.Clear();
+                    CurrentSn = input.Text;
+                }
+                input.Text = "";
         };
 
         // config.ini修改时修改监视目录
@@ -84,7 +93,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 try
                 {
-                    string item = await await onCsvCreated(new HooksArgs() { sn = CurrentSn, config = Config, file = e.FullPath, index = ReportQueue.ClaimIndex() });
+                    string item = await await onCsvCreated(new HooksArgs() { sn = CurrentSn, config = Config, file = e.FullPath, index = ReportQueue.ClaimIndex(), http = Http });
                     if (item == null)
                     {
                         return;
@@ -96,7 +105,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                         if (ReportQueue.Count >= csvCount)
                         {
                             List<string> files = ReportQueue.Dequeue(csvCount);
-                            await await generateReport(new HooksArgs() { sn = CurrentSn, config = Config, files = files });
+                            await await generateReport(new HooksArgs() { sn = CurrentSn, config = Config, files = files, http = Http });
                         }
                     });
                 }
@@ -127,6 +136,7 @@ public class HooksArgs
     public string? file;
     public int index;
     public List<string>? files;
+    public HttpClient? http;
 }
 
 public sealed class ReportQueue : IEnumerable<string>, IDisposable
