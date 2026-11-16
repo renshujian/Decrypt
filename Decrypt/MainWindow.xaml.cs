@@ -101,7 +101,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     await await Dispatcher.InvokeAsync(async () =>
                     {
                         ReportQueue.Enqueue(item);
-                        int csvCount = int.Parse(Config["Report:CsvCount"]!);
+                        // 一个产品的 CSV 总数 = 样品数 * 每个样品的 repeat 数
+                        int sampleCount = Config.GetValue("Report:SampleCount", 1);
+                        int repeatCount = Config.GetValue("Report:RepeatCount", 1);
+                        int csvCount = sampleCount * repeatCount;
                         if (ReportQueue.Count >= csvCount)
                         {
                             List<string> files = ReportQueue.Dequeue(csvCount);

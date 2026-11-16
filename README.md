@@ -2,7 +2,7 @@
 
 ## 1. 这是什么
 
-工控上位机软件：扫码 → 调 MOM 接口校验条码 → 写 PLC 寄存器 → 采集设备产生的 CSV 曲线数据 → 生成 Excel 报告存本地 → 调 MOM 接口上传工艺参数。
+工控上位机软件：扫码 → 调 MES（SiteControl）接口校验条码 → 写 PLC 寄存器 → 采集设备产生的 CSV 曲线数据 → 生成 Excel 报告存本地（**不再上传工艺参数**）。
 
 - `Decrypt/` 是唯一的项目，输出 `Report.exe`。分支 `modbus`。
 - TFM `net6.0-windows7.0`，`SelfContained=true`，WPF。
@@ -21,10 +21,10 @@
 ### 运行流程
 
 ```
-扫码枪 → input 防抖 500ms → Hooks.OnInput(sn, config, http)   // 校验接口 + 写 PLC 400
-CSV 落地 → FileSystemWatcher.Created → Hooks.OnCsvCreated(...) // 只返回文件名，宿主入队
-队列达到 CsvCount → Hooks.GenerateReport(sn, config, files, http)
-                      → 解析判定 → 出 Excel 报告 → 按配置调上传接口
+扫码枪 → input 防抖 500ms → Hooks.OnInput(sn, config, http)    // SiteControl 校验 + 写 PLC 400
+CSV 落地 → FileSystemWatcher.Created → Hooks.OnCsvCreated(...)  // 只返回文件名，宿主入队
+队列达到 SampleCount×RepeatCount → Hooks.GenerateReport(sn, config, files, http)
+                      → 按样品判定 → 出 Excel 报告（不调用任何上传接口）
 ```
 
 ---
@@ -69,11 +69,15 @@ var onInput = hooks.ContinueWith<Task>("Hooks.OnInput(sn, config, http)").Create
 
 **3.2 版式（当前）**
 - 第 1 行：`产品编码` / `{{SN}}`；第 3 行空；第 4 行表头；第 5 行数据模板
-- 列 B..L：位置 `{{item.Index}}`、上下限参数组 `{{item.LimitGroup}}`、起始浮动力/位移、最终浮动力/位移、起始浮动力下限/上限、最终浮动力下限/上限、结果 `{{item.Result}}`
+- **一行 = 一个样品**（共 `SampleCount` 行），列 B..L：位置 `{{item.Index}}`、上下限参数组 `{{item.LimitGroup}}`、起始浮动力/位移、最终浮动力/位移、起始浮动力下限/上限、最终浮动力下限/上限、结果 `{{item.Result}}`
+- 行里的力值是该样品**后续 repeat 里的最小值**，位移取该最小浮动力所在那次 repeat 的位移（详细规则见第 4 节）
 - **每行数据自带它所用的上下限**，因此有几组 `LimitGroups` 就显示几组（早期模板把两组上下限写死在第 1、2 行，无法扩展）
 
-**3.3 图表插入位置**
-`row = 6 + data.Count`，`row + 28 * i`。28 是实测值：**600×500 像素的 PNG，按 96 DPI 插入 = 375 磅高，除以默认行高 13.5 磅 ≈ 28 行**。改图片尺寸或行高就要重算 `高(px)/96*72/13.5`。
+**3.3 图表版式与位置**
+- **一行一个样品、一列一次 repeat**：第 s 个样品（0 起）第 r 次 repeat 的图锚定在 `(6 + SampleCount) + 28*s` 行、`B + 5*r` 列（即 B / G / L …）。
+- **贴图顺序 = CSV 入队顺序**（样品优先：样品1的 repeat1..N 在同一行从左到右，换行才是样品2），与表格行的顺序一致。图上没有标题，**顺序就是唯一的对应关系**，改排序前先想清楚现场怎么对图。
+- 行距 28 = **600×500 像素的 PNG 按 96 DPI 插入 = 375 磅高，除以默认行高 13.5 磅 ≈ 28 行**；列距 5 = 锚点 B / G / L（图片宽 450 磅，B..F 列宽合计约等于图片宽度）。改图片尺寸或列宽就要重算 `高(px)/96*72/13.5` 与列距。
+- 报告整体高度 ≈ `SampleCount × 28` 行，与 `RepeatCount` 无关（repeat 往右排）。
 
 **3.4 报告文件名**（需求描述里的"OK/NG产品条码时间"是简写，以代码为准）
 
@@ -89,36 +93,28 @@ var onInput = hooks.ContinueWith<Task>("Hooks.OnInput(sn, config, http)").Create
 
 ## 4. 请求时机与判定逻辑
 
-- **一个产品条码调一次上传接口**，在 `GenerateReport` 里收齐 `CsvCount` 个 CSV 后调用；`OnCsvCreated` 不再调接口，只返回文件名。
-- 多组数据参数名加后缀：`起始浮动力-1` … `最终浮动力上限-4`。
-- `TestResult` 传条码总结果：有一个 NG 则 `"NG"`，全 OK 则 `"OK"`。
-- `Mes:EnableUpload=false` 时不调上传接口，**但仍生成本地报告**。
-- 允许 NG 次数**只看本次检测任务**（`data.Count(d => !d.GroupOk)`），不跨扫码累计、不落盘。每次扫码都是独立任务。
-- **`CsvCount` 必须等于现场每个条码实际产生的 CSV 数**，否则队列到不了阈值，而新扫码会清空队列 → 不生成任何报告、不上传、无任何提示。这是当前的静默失效点。
-- 最后一个 CSV 可能还在写就触发 `GenerateReport`（只在开头 `await Task.Delay(300)`），文件残缺会抛异常导致本次报告与上传全丢。**去掉了 `OnCsvCreated` 里原来的 500ms 等待后，这条链上就没有"等文件写完"的保护了。**
+- **扫码校验**：`OnInput` 请求 `{SiteControl:Endpoint}?data={SiteControl:MySite};{sn}`（POST、无请求体），回包 `data` 以 `;` 分隔；`data[0]=="OK"` 写 PLC 400=0，`"NG"` 弹框并写 400=1。`SiteControl:Enable=false` 时整段跳过。
+- `OnCsvCreated` 不调接口，只返回文件名；宿主按 CSV 到达顺序入队。
+- 队列满 **`SampleCount × RepeatCount`**（一个产品的 CSV 总数）后调 `GenerateReport`，**只生成报告，不调用任何上传接口**。
+- **判定规则（`Sample.Judge`，一个样品判定一次）**：每个样品的第 1 个 repeat **不参与判定**；其余 repeat 中分别取最小的起始浮动力、最终浮动力，各自与该样品的上下限比较（`>` 下限且 `<` 上限），两者都合格才算 OK；位移取该最小浮动力所在那次 repeat 的位移。`RepeatCount=1` 时没有其它 repeat 可判定，退化为用第 1 个 repeat。
+- 报告：`SampleCount` 行数据 + `SampleCount × RepeatCount` 张图；任何一个样品 NG 则整份报告记 NG。
+- `LimitGroupMap` 现在按**样品**索引（逗号分隔，长度 = SampleCount），超出长度循环取。
+- **`SampleCount × RepeatCount` 必须等于现场每个条码实际产生的 CSV 数**，否则队列到不了阈值，而新扫码会清空队列 → 不生成任何报告、无任何提示。这是当前的静默失效点。
+- 最后一个 CSV 可能还在写就触发 `GenerateReport`（只在开头 `await Task.Delay(300)`），文件残缺会抛异常导致本次报告丢失。
 
 ### 线程
 `GenerateReport` 开头 `await Task.Delay(300).ConfigureAwait(continueOnCapturedContext: false)` 之后**已经在池线程上**（实测：进入时线程 1/非池线程，Delay 后线程 11/池线程）。**不需要再套 `Task.Run`。**
 
-### MOM 请求
+### 接口请求（MES SiteControl）
 - `HttpClient` 由宿主经 `HooksArgs.http` → 脚本参数传入，`Hooks.cs` 内不 `new HttpClient()`。带日志、超时 60 秒。
-- 序列化选项**必须是静态字段**且**从 Web 默认值构造**：
-  ```csharp
-  private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
-  {
-      Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,   // 中文不转义，日志可读
-  };
-  ```
-  - 直接 `new JsonSerializerOptions { ... }` 会丢掉 Web 默认值（camelCase 等）→ 报文键名变成 PascalCase。
-  - `JsonContent.Create(request, options: ...)` 传入自定义 options 时**不会**补 Web 默认值；`PostAsJsonAsync(endpoint, request, options)` 才有那套规则。
-  - 每次请求都 new 会丢掉内部 `JsonTypeInfo` 缓存。
-- 请求体由 `HttpLogHandler` 调 `LoadIntoBufferAsync()` 后记录（读请求体前必须缓冲，否则读不到、且内容只能发一次）。
+- 请求：`POST {SiteControl:Endpoint}?data={SiteControl:MySite};{sn}`，无请求体；回包用 `ReadFromJsonAsync<SiteControlRes>()` 反序列化（`record SiteControlRes(string msg, int code, string data)`），靠 `System.Net.Http.Json` 的 Web 默认值做大小写不敏感绑定。
+- 请求/响应报文由 `HttpLogHandler` 调 `LoadIntoBufferAsync()` 后记录（读请求体前必须缓冲，否则读不到、且内容只能发一次）。
 
 ### `ReadCsv` 与基线 `38f2f24` 的关系
-结构一致：`EV_1` / `EV_CURVE` / `curveDatas`（含先取 `count`）。差异仅为新增 `unit` 提取带来的副作用：
+结构一致：`EV_1` / `EV_CURVE` / `curveDatas`（含先取 `count`）。差异仅为取值的容错（不再提取 `unit`，报告里没有单位列）：
 - `value` 是非数字字符串（如 `"None"`）、缺 `value` 字段、坏 JSON、JSON 数组 —— **两版行为完全相同**
 - 空字符串：基线抛 `JsonReaderException`，当前返回 0（更宽松）
-- 大写 `Value`/`Unit`：基线取不到，当前能取到
+- 大写 `Value`：基线取不到，当前能取到
 
 CSV 列名是**现场可配置**的，不同现场格式不同（样例里有 `entry`、`basepoint_y` 等多种叫法），所以"字段名对不上"不代表代码有问题，判据是"与基线一致"。
 
@@ -166,12 +162,12 @@ B 必须注意：
 
 | 需求 | 位置 |
 |---|---|
-| 上传参数项 / 名称 / 后缀规则 | `UploadProcessParametersAsync` |
-| 判定规则（上下限比较） | `Data.LoadGroup` |
+| 扫码校验接口 | `OnInput`（`SiteControl:*`、写 PLC 400） |
+| 判定规则（跳过第一次 repeat、取最小浮动力、上下限比较） | `Sample.Judge` |
 | 报告内容与列 | `template.xlsx`（保留 `Tests` 命名区域） |
 | 报告文件名与存放目录 | `GenerateExcelReport` |
-| 图表尺寸/位置 | `GenerateExcelReport` 里 `plot.SavePng(600,500)` 与 `row + 28 * i` |
-| 何时调接口 | `GenerateReport` 末尾的 `Mes:EnableUpload` / `Mes:AllowNgCount` 分支 |
+| 图表尺寸/位置 | `GenerateExcelReport` 里 `plot.SavePng(600,500)`、`chartRowStep = 28`、`chartColumnStep = 5`（B/G/L） |
+| 一个产品的 CSV 总数 | `Report:SampleCount × Report:RepeatCount`（宿主与 `GenerateReport` 都按乘积算） |
 | 现场可调项 | `config.ini`（GBK），注释是给现场看的，要写清楚 |
 | 接口日志 | `MainWindow.Logging.cs` |
 | 脚本能用哪些库 | `MainWindow.xaml.cs` 的 `WithReferences` |
