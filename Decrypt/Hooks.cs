@@ -97,26 +97,22 @@ internal static class Hooks
     {
         // 等待文件上传完成并且不在主线程继续运行。后续的代码有可能并发执行，不允许写固定名称的文件
         await Task.Delay(300).ConfigureAwait(continueOnCapturedContext: false);
-        LimitGroup group1 = config.GetRequiredSection("LimitGroup1").Get<LimitGroup>() ?? throw new ArgumentNullException("LimitGroup1");
-        LimitGroup group2 = config.GetRequiredSection("LimitGroup2").Get<LimitGroup>() ?? throw new ArgumentNullException("LimitGroup2");
+        List<LimitGroup> groups = ReadLimitGroups(config);
         List<Data> data = files.ConvertAll(ReadCsv);
         bool ok = true;
         for (int i = 0; i < data.Count; i++)
         {
-            LimitGroup limitGroup;
             data[i].Index = i + 1;
-            if (i >= 4 && i <= 7)
+            int groupIndex = ResolveLimitGroupIndex(config, i);
+            if (groupIndex >= groups.Count)
             {
-                data[i].LimitGroup = 2;
-                limitGroup = group2;
+                throw new InvalidOperationException($"LimitGroupMap 引用了不存在的上下限组索引 {groupIndex}，LimitGroups 共 {groups.Count} 组");
             }
-            else
-            {
-                data[i].LimitGroup = 1;
-                limitGroup = group1;
-            }
+            // 报告里的「上下限参数组」用 1 起编号
+            data[i].LimitGroup = groupIndex + 1;
 
-            if (data[i].basepoint_y > limitGroup.InitialLowerLimit && data[i].basepoint_y < limitGroup.InitialUpperLimit && data[i].XMax_Y > limitGroup.FinalLowerLimit && data[i].XMax_Y < limitGroup.FinalUpperLimit)
+            // 起始浮动力、最终浮动力、X/Y 方向力都必须落在本样品所用上下限组的区间内
+            if (Judge(groups[groupIndex], data[i]))
             {
                 data[i].Result = "pass";
             }
@@ -129,14 +125,7 @@ internal static class Hooks
 
         using var report = new XLTemplate("template.xlsx");
         report.AddVariable("SN", sn);
-        report.AddVariable("InitialLowerLimit1", group1.InitialLowerLimit);
-        report.AddVariable("InitialUpperLimit1", group1.InitialUpperLimit);
-        report.AddVariable("FinalLowerLimit1", group1.FinalLowerLimit);
-        report.AddVariable("FinalUpperLimit1", group1.FinalUpperLimit);
-        report.AddVariable("InitialLowerLimit2", group2.InitialLowerLimit);
-        report.AddVariable("InitialUpperLimit2", group2.InitialUpperLimit);
-        report.AddVariable("FinalLowerLimit2", group2.FinalLowerLimit);
-        report.AddVariable("FinalUpperLimit2", group2.FinalUpperLimit);
+        report.AddVariable("Limits", groups);
         report.AddVariable("Tests", data);
         report.Generate();
 
@@ -154,6 +143,117 @@ internal static class Hooks
         }
 
         report.SaveAs(ok ? $@"{config["Report:OkDir"]}\OK_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss.fff")}.xlsx" : $@"{config["Report:NgDir"]}\NG_{sn}_{DateTime.Now.ToString("yyyyMMddHHmmss.fff")}.xlsx");
+    }
+
+    /// <summary>
+    /// 判定一个样品是否合格：起始浮动力、最终浮动力、X/Y 方向力都必须落在该样品所用上下限组的区间内。
+    /// X/Y 方向力的实测最小值和最大值都要各自与上限、下限比较，不依赖"最小值 ≤ 最大值"这个前提
+    /// （PLC 给的数不保证大小顺序，只查一端就会放过越界的数）。
+    /// </summary>
+    private static bool Judge(LimitGroup limitGroup, Data data)
+    {
+        return InRange(data.basepoint_y, limitGroup.InitialLowerLimit, limitGroup.InitialUpperLimit)
+            && InRange(data.XMax_Y, limitGroup.FinalLowerLimit, limitGroup.FinalUpperLimit)
+            && InRange(data.XDirMin, limitGroup.XDirLowerLimit, limitGroup.XDirUpperLimit)
+            && InRange(data.XDirMax, limitGroup.XDirLowerLimit, limitGroup.XDirUpperLimit)
+            && InRange(data.YDirMin, limitGroup.YDirLowerLimit, limitGroup.YDirUpperLimit)
+            && InRange(data.YDirMax, limitGroup.YDirLowerLimit, limitGroup.YDirUpperLimit);
+    }
+
+    /// <summary>严格区间判定：等于上/下限都不合格</summary>
+    private static bool InRange(double value, double lowerLimit, double upperLimit)
+    {
+        return value > lowerLimit && value < upperLimit;
+    }
+
+    /// <summary>
+    /// 读取所有上下限组。配置写成数组形式：[LimitGroups:0]、[LimitGroups:1] ...（索引从 0 开始且连续），
+    /// 样品与组的对应关系由 Report:LimitGroupMap 指定。
+    /// </summary>
+    /// <exception cref="InvalidOperationException"></exception>
+    private static List<LimitGroup> ReadLimitGroups(IConfiguration config)
+    {
+        IConfigurationSection section = config.GetSection("LimitGroups");
+        List<IConfigurationSection> groupSections = new();
+        foreach (IConfigurationSection child in section.GetChildren())
+        {
+            groupSections.Add(child);
+        }
+        if (groupSections.Count == 0)
+        {
+            throw new InvalidOperationException("未配置 [LimitGroups:0...] 上下限组");
+        }
+
+        // 索引必须从 0 开始连续：Get<List<T>>() 是按子节点顺序取值的，跳号会让报告里的「参数组」
+        // 编号和配置里的 [LimitGroups:N] 对不上（例如只配了 [LimitGroups:1] 会被当成第 1 组显示）
+        for (int i = 0; i < groupSections.Count; i++)
+        {
+            if (groupSections[i].Key != i.ToString(CultureInfo.InvariantCulture))
+            {
+                throw new InvalidOperationException($"config.ini 的上下限组索引必须从 0 开始连续，缺少 [LimitGroups:{i}]（下一个是 [LimitGroups:{groupSections[i].Key}]）");
+            }
+        }
+
+        // 每组 8 项都必须显式填：缺项会被静默绑成 0（老配置没有 X/Y 四项时会让所有样品判 fail），
+        // 留空则是 Binder 的通用转换错误、看不出是哪一项，所以这里先逐项检查
+        string[] requiredKeys =
+        {
+            "InitialLowerLimit", "InitialUpperLimit", "FinalLowerLimit", "FinalUpperLimit",
+            "XDirLowerLimit", "XDirUpperLimit", "YDirLowerLimit", "YDirUpperLimit",
+        };
+        foreach (IConfigurationSection groupSection in groupSections)
+        {
+            foreach (string key in requiredKeys)
+            {
+                if (string.IsNullOrWhiteSpace(groupSection[key]))
+                {
+                    throw new InvalidOperationException($"config.ini 缺少 [LimitGroups:{groupSection.Key}] {key}（每组 8 项上下限都必须填数字）");
+                }
+            }
+        }
+
+        List<LimitGroup> groups = section.Get<List<LimitGroup>>() ?? new List<LimitGroup>();
+        for (int i = 0; i < groups.Count; i++)
+        {
+            // 报告里的「参数组」用 1 起编号，配置里的索引是 0 起
+            groups[i].Group = i + 1;
+        }
+        return groups;
+    }
+
+    /// <summary>
+    /// 第 index 个样品（从 0 开始）使用的上下限组索引，来自 Report:LimitGroupMap（逗号分隔）。
+    /// 没配置时统一用第 0 组；配置项比样品数少时循环使用。
+    /// </summary>
+    private static int ResolveLimitGroupIndex(IConfiguration config, int index)
+    {
+        string? mapRaw = config["Report:LimitGroupMap"];
+        if (string.IsNullOrWhiteSpace(mapRaw))
+        {
+            return 0;
+        }
+
+        List<int> map = new();
+        foreach (string part in mapRaw.Split(','))
+        {
+            string token = part.Trim();
+            if (token.Length == 0)
+            {
+                continue;
+            }
+            // 写错了不能静默跳过：那会让后面的样品整体错位到别的上下限组
+            if (!int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out int groupIndex) || groupIndex < 0)
+            {
+                throw new InvalidOperationException($"Report:LimitGroupMap 里的 \"{token}\" 不是有效的上下限组索引，应写成逗号分隔的非负整数（例如 0,0,1,1）");
+            }
+            map.Add(groupIndex);
+        }
+
+        if (map.Count == 0)
+        {
+            return 0;
+        }
+        return map[index % map.Count];
     }
 
     private static Data ReadCsv(string pathWithParam)
@@ -240,10 +340,16 @@ internal static class Hooks
 
     internal class LimitGroup
     {
+        /// <summary>报告「参数表」里的参数组编号，从 1 开始（配置文件里是 0 起的索引）</summary>
+        public int Group { get; set; }
         public double InitialLowerLimit { get; set; }
         public double InitialUpperLimit { get; set; }
         public double FinalLowerLimit { get; set; }
         public double FinalUpperLimit { get; set; }
+        public double XDirLowerLimit { get; set; }
+        public double XDirUpperLimit { get; set; }
+        public double YDirLowerLimit { get; set; }
+        public double YDirUpperLimit { get; set; }
     }
 
     internal class Data
